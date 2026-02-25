@@ -1,6 +1,6 @@
 use crate::domains;
+use crate::error::SkillMinerError;
 use crate::types::{DomainCluster, SkillDraft};
-use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 use std::fmt;
@@ -45,18 +45,14 @@ fn build_description(cluster: &DomainCluster) -> String {
         .map(|p| p.title.as_str())
         .collect();
 
-    let keywords: Vec<&str> = cluster
-        .patterns
-        .iter()
-        .take(5)
-        .map(|p| p.title.as_str())
-        .collect();
+    let domain_def = domains::normalize(&cluster.domain);
+    let domain_keywords: Vec<&str> = domain_def.keywords.iter().map(|s| s.as_str()).collect();
 
     format!(
         "{}。({}) {}と言われた時に使用。",
         cluster.domain,
         pattern_summaries.join("、"),
-        keywords.join("、")
+        domain_keywords.join("、")
     )
 }
 
@@ -107,14 +103,14 @@ description: "{}"
 pub fn check_existing_skills(
     drafts: &mut [SkillDraft],
     skills_dir: &Path,
-) -> Result<()> {
+) -> Result<(), SkillMinerError> {
     let existing = load_existing_skills(skills_dir)?;
 
     // Build a slug→(name, path) lookup for domain master slug matching
-    let slug_map: HashMap<&str, (&String, &std::path::PathBuf)> = existing
+    let slug_map: HashMap<String, (&String, &std::path::PathBuf)> = existing
         .iter()
         .map(|(name, path)| {
-            let slug = domains::normalize(name).slug;
+            let slug = domains::normalize(name).slug.clone();
             (slug, (name, path))
         })
         .collect();
@@ -127,7 +123,7 @@ pub fn check_existing_skills(
 
         // Check by domain master slug match
         if draft.existing_skill.is_none() {
-            let draft_slug = domains::normalize(&draft.name).slug;
+            let draft_slug = &domains::normalize(&draft.name).slug;
             if let Some((_name, path)) = slug_map.get(draft_slug) {
                 draft.existing_skill = Some((*path).clone());
             }
@@ -158,7 +154,7 @@ pub fn check_existing_skills(
     Ok(())
 }
 
-fn load_existing_skills(skills_dir: &Path) -> Result<HashMap<String, std::path::PathBuf>> {
+fn load_existing_skills(skills_dir: &Path) -> Result<HashMap<String, std::path::PathBuf>, SkillMinerError> {
     let mut skills = HashMap::new();
 
     if !skills_dir.exists() {

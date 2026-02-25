@@ -1,13 +1,16 @@
+use crate::error::SkillMinerError;
 use crate::types::{Conversation, Message, Role, ToolUse};
-use anyhow::{Context, Result};
+use crate::util;
 use chrono::{DateTime, Duration, Utc};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// Parse a single conversation JSONL file into a Conversation struct
-pub fn parse_conversation(path: &Path) -> Result<Conversation> {
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+pub fn parse_conversation(path: &Path) -> Result<Conversation, SkillMinerError> {
+    let file = File::open(path).map_err(|e| {
+        SkillMinerError::Parse(format!("opening {}: {}", path.display(), e))
+    })?;
     let reader = BufReader::new(file);
 
     let id = path
@@ -17,8 +20,8 @@ pub fn parse_conversation(path: &Path) -> Result<Conversation> {
         .to_string();
 
     let mut messages = Vec::new();
-    let mut start_time = None;
-    let mut end_time = None;
+    let mut start_time: Option<DateTime<Utc>> = None;
+    let mut end_time: Option<DateTime<Utc>> = None;
     let mut cwd = None;
     let mut git_branch = None;
 
@@ -50,17 +53,16 @@ pub fn parse_conversation(path: &Path) -> Result<Conversation> {
                 .map(String::from);
         }
 
-        let timestamp = entry
+        let ts_parsed: Option<DateTime<Utc>> = entry
             .get("timestamp")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            .and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
-        if start_time.is_none() && !timestamp.is_empty() {
-            start_time = Some(timestamp.clone());
+        if start_time.is_none() && ts_parsed.is_some() {
+            start_time = ts_parsed;
         }
-        if !timestamp.is_empty() {
-            end_time = Some(timestamp.clone());
+        if ts_parsed.is_some() {
+            end_time = ts_parsed;
         }
 
         // Skip meta messages (commands, system)
@@ -95,7 +97,7 @@ pub fn parse_conversation(path: &Path) -> Result<Conversation> {
         messages.push(Message {
             role,
             content,
-            timestamp,
+            timestamp: ts_parsed,
             tool_uses,
         });
     }
@@ -138,7 +140,7 @@ fn extract_content(message: &serde_json::Value) -> (String, Vec<ToolUse>) {
                         let input_val = block.get("input");
                         let input = input_val.map(|i| {
                             let s = i.to_string();
-                            truncate_str(&s, 200)
+                            util::truncate(&s, 200)
                         }).unwrap_or_default();
 
                         // Extract file_path for Edit/Read/Write tools
@@ -155,7 +157,7 @@ fn extract_content(message: &serde_json::Value) -> (String, Vec<ToolUse>) {
                             input_val
                                 .and_then(|i| i.get("command"))
                                 .and_then(|v| v.as_str())
-                                .map(|s| truncate_str(s, 100))
+                                .map(|s| util::truncate(s, 100))
                         } else {
                             None
                         };
@@ -208,16 +210,6 @@ fn remove_tag_block(s: &str, tag: &str) -> String {
     result
 }
 
-/// Truncate a string at a safe char boundary
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let end: String = s.chars().take(max_chars).collect();
-        format!("{}...", end)
-    }
-}
-
 /// Check if content is only system tags with no real user input
 fn is_system_only(content: &str) -> bool {
     let stripped = content.trim();
@@ -227,11 +219,14 @@ fn is_system_only(content: &str) -> bool {
 }
 
 /// Discover all conversation JSONL files in a project directory
-pub fn discover_conversations(projects_dir: &Path) -> Result<Vec<PathBuf>> {
+pub fn discover_conversations(projects_dir: &Path) -> Result<Vec<PathBuf>, SkillMinerError> {
     let mut paths = Vec::new();
 
     if !projects_dir.exists() {
-        anyhow::bail!("Projects directory not found: {}", projects_dir.display());
+        return Err(SkillMinerError::Config(format!(
+            "Projects directory not found: {}",
+            projects_dir.display()
+        )));
     }
 
     // Walk project subdirectories
@@ -268,7 +263,7 @@ pub fn discover_conversations(projects_dir: &Path) -> Result<Vec<PathBuf>> {
 
 /// Parse all conversations, filtering by minimum message count and days_back.
 /// days_back=0 means no time filter (all conversations included).
-pub fn parse_all(projects_dir: &Path, min_messages: usize, days_back: u32) -> Result<Vec<Conversation>> {
+pub fn parse_all(projects_dir: &Path, min_messages: usize, days_back: u32) -> Result<Vec<Conversation>, SkillMinerError> {
     let paths = discover_conversations(projects_dir)?;
     let cutoff = if days_back > 0 {
         Some(Utc::now() - Duration::days(days_back as i64))
@@ -283,11 +278,9 @@ pub fn parse_all(projects_dir: &Path, min_messages: usize, days_back: u32) -> Re
                 // Apply days_back filter: skip conversations whose start_time is before cutoff.
                 // Conversations with no timestamp are always included.
                 if let Some(ref cutoff) = cutoff {
-                    if let Some(ref ts) = conv.start_time {
-                        if let Ok(dt) = ts.parse::<DateTime<Utc>>() {
-                            if dt < *cutoff {
-                                continue;
-                            }
+                    if let Some(dt) = conv.start_time {
+                        if dt < *cutoff {
+                            continue;
                         }
                     }
                 }

@@ -20,3 +20,4 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 rayon = "1"
+toml = "0.8"

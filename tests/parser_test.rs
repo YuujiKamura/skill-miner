@@ -1,3 +1,4 @@
+use chrono::{TimeZone, Utc};
 use skill_miner::parser;
 use skill_miner::types::Role;
 use std::path::Path;
@@ -39,10 +40,8 @@ fn parse_fixture_roles_alternate() {
 #[test]
 fn parse_fixture_timestamps_present() {
     let conv = parser::parse_conversation(&fixture_path()).unwrap();
-    assert_eq!(
-        conv.start_time.as_deref(),
-        Some("2026-01-15T10:00:00.000Z")
-    );
+    let expected = Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap();
+    assert_eq!(conv.start_time, Some(expected));
     // end_time is the last timestamp encountered (including meta/snapshot lines)
     assert!(conv.end_time.is_some());
 }

@@ -1,0 +1,59 @@
+[[domain]]
+name = "舗装工事"
+slug = "pavement"
+keywords = ["舗装", "温度管理", "出来形", "転圧", "切削", "アスファルト", "路盤", "品質管理"]
+
+[[domain]]
+name = "写真管理"
+slug = "photo-management"
+keywords = ["写真", "工事写真", "台帳", "タグ", "アルバム", "撮影"]
+
+[[domain]]
+name = "PDF操作"
+slug = "pdf"
+keywords = ["PDF", "pdf", "生成", "結合", "テンプレート", "書き込み"]
+
+[[domain]]
+name = "施工体制"
+slug = "construction-admin"
+keywords = ["施工体制", "下請", "安全書類", "カルテ", "台帳", "契約"]
+
+[[domain]]
+name = "スプレッドシート"
+slug = "spreadsheet"
+keywords = ["スプレッドシート", "Excel", "Google Sheets", "数式", "xlsx"]
+
+[[domain]]
+name = "Rust開発"
+slug = "rust-dev"
+keywords = ["Rust", "クレート", "cargo", "ビルド", "WASM", "derive"]
+
+[[domain]]
+name = "AI連携"
+slug = "ai-integration"
+keywords = ["Gemini", "Claude", "API", "プロンプト", "精度", "モデル"]
+
+[[domain]]
+name = "区画線"
+slug = "lane-marking"
+keywords = ["区画線", "数量計算", "レーン", "ライン"]
+
+[[domain]]
+name = "DXF/CAD"
+slug = "dxf-cad"
+keywords = ["DXF", "CAD", "横断図", "図面"]
+
+[[domain]]
+name = "工程管理"
+slug = "schedule"
+keywords = ["工程", "週報", "スケジュール", "工程表"]
+
+[[domain]]
+name = "ツール設計"
+slug = "tool-design"
+keywords = ["CLI", "スキル", "自動化", "ツール設計"]
+
+[[domain]]
+name = "その他"
+slug = "misc"
+keywords = []

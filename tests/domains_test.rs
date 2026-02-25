@@ -2,18 +2,16 @@ use skill_miner::domains;
 
 #[test]
 fn normalize_empty_string() {
-    // Empty string is a substring of every domain name, so it matches the first
-    // non-misc domain in the master list (舗装工事/pavement).
-    // This documents the current behavior.
+    // Empty string should fall back to misc, not match every domain via substring
     let d = domains::normalize("");
-    assert_eq!(d.slug, "pavement");
+    assert_eq!(d.slug, "misc");
 }
 
 #[test]
 fn normalize_whitespace_only() {
-    // After trim, becomes empty string -> same behavior as empty string.
+    // After trim, becomes empty string -> falls back to misc
     let d = domains::normalize("   ");
-    assert_eq!(d.slug, "pavement");
+    assert_eq!(d.slug, "misc");
 }
 
 #[test]
@@ -95,9 +93,9 @@ fn find_by_name_returns_some_for_exact() {
 #[test]
 fn prompt_domain_list_contains_all() {
     let list = domains::prompt_domain_list();
-    for d in domains::DOMAINS.iter() {
+    for d in domains::domains().iter() {
         assert!(
-            list.contains(d.name),
+            list.contains(d.name.as_str()),
             "prompt_domain_list should contain: {}",
             d.name
         );

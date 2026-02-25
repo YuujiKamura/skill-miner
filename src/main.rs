@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use skill_miner::{classifier, compressor, extractor, generator, history, parser, MineConfig};
+use skill_miner::{classifier, compressor, extractor, generator, history, parser, util, MineConfig, PipelineStats};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -48,6 +49,9 @@ enum Command {
         /// Output JSON file for patterns
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Maximum parallel AI calls
+        #[arg(long, default_value = "4")]
+        parallel: usize,
     },
 
     /// Generate skill drafts from extracted patterns
@@ -72,6 +76,9 @@ enum Command {
         /// Dry run: show what would be generated without writing files
         #[arg(long)]
         dry_run: bool,
+        /// Maximum parallel AI calls
+        #[arg(long, default_value = "4")]
+        parallel: usize,
     },
 }
 
@@ -92,14 +99,15 @@ fn main() -> Result<()> {
             min_messages,
             output,
         } => cmd_classify(&config, days, min_messages, output),
-        Command::Extract { input, output } => cmd_extract(&config, input, output),
+        Command::Extract { input, output, parallel } => cmd_extract(&config, input, output, parallel),
         Command::Generate { input, output } => cmd_generate(&config, input, output),
         Command::Mine {
             days,
             min_messages,
             output,
             dry_run,
-        } => cmd_mine(&config, days, min_messages, output, dry_run),
+            parallel,
+        } => cmd_mine(&config, days, min_messages, output, dry_run, parallel),
     }
 }
 
@@ -133,7 +141,7 @@ fn cmd_scan(config: &MineConfig, days: u32, min_messages: usize) -> Result<()> {
             s.message_count,
             s.topics.join(", ")
         );
-        println!("  {}", truncate(&s.first_message, 80));
+        println!("  {}", util::truncate(&s.first_message, 80));
         println!();
     }
 
@@ -188,7 +196,7 @@ fn cmd_scan_fast(config: &MineConfig, days: u32, project: Option<String>) -> Res
         let mut sorted: Vec<_> = entries.iter().copied().collect();
         sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         for e in sorted.iter().take(3) {
-            let display = truncate(&e.display, 80);
+            let display = util::truncate(&e.display, 80);
             println!("  {}", display);
         }
         println!();
@@ -237,16 +245,17 @@ fn cmd_classify(
     Ok(())
 }
 
-fn cmd_extract(config: &MineConfig, input: PathBuf, output: Option<PathBuf>) -> Result<()> {
+fn cmd_extract(config: &MineConfig, input: PathBuf, output: Option<PathBuf>, parallel: usize) -> Result<()> {
     let json = std::fs::read_to_string(&input)?;
     let classified: Vec<skill_miner::ClassifiedConversation> = serde_json::from_str(&json)?;
 
     let groups = classifier::group_by_domain(&classified);
 
-    eprintln!("Extracting patterns from {} domains (parallel)...", groups.len());
+    eprintln!("Extracting patterns from {} domains (parallel, max {})...", groups.len(), parallel);
 
+    // Standalone extract: no pre-parsed conversations, will parse from source_path
     let (clusters, _extract_calls) =
-        extractor::extract_all_parallel(&groups, &config.ai_options)?;
+        extractor::extract_all_parallel(&groups, None, &config.ai_options, parallel)?;
 
     for cluster in &clusters {
         println!(
@@ -294,7 +303,7 @@ fn cmd_generate(config: &MineConfig, input: PathBuf, output: Option<PathBuf>) ->
                 println!("  {}", line);
             }
         } else {
-            println!("[{}] {}: {}", status, draft.name, truncate(&draft.description, 80));
+            println!("[{}] {}: {}", status, draft.name, util::truncate(&draft.description, 80));
         }
 
         let content = generator::format_skill_md(draft);
@@ -313,6 +322,7 @@ fn cmd_mine(
     min_messages: usize,
     output: Option<PathBuf>,
     dry_run: bool,
+    parallel: usize,
 ) -> Result<()> {
     // Step 1: Parse
     eprintln!("[1/4] Parsing conversations (last {} days)...", days);
@@ -332,10 +342,16 @@ fn cmd_mine(
     // Stats: classify calls = number of batches (50 per batch)
     let classify_calls = (summaries.len() + 49) / 50; // ceil division
 
-    // Step 3: Extract (parallel)
+    // Build conv_map from already-parsed conversations to avoid re-parsing in extractor
+    let conv_map: HashMap<String, &skill_miner::Conversation> = conversations
+        .iter()
+        .map(|c| (c.id.clone(), c))
+        .collect();
+
+    // Step 3: Extract (parallel) — uses conv_map to skip redundant parse
     eprintln!("[3/4] Extracting patterns (parallel)...");
     let (clusters, extract_calls) =
-        extractor::extract_all_parallel(&groups, &config.ai_options)?;
+        extractor::extract_all_parallel(&groups, Some(&conv_map), &config.ai_options, parallel)?;
     for cluster in &clusters {
         eprintln!("  {} → {} patterns", cluster.domain, cluster.patterns.len());
     }
@@ -374,29 +390,25 @@ fn cmd_mine(
     }
 
     // Stats summary
-    let total_calls = classify_calls + extract_calls;
+    let stats = PipelineStats {
+        classify_calls,
+        extract_calls,
+        total_calls: classify_calls + extract_calls,
+    };
     eprintln!();
     eprintln!("=== Stats ===");
     eprintln!(
         "Classify: {} AI calls ({} conversations / 50 per batch)",
-        classify_calls,
+        stats.classify_calls,
         summaries.len()
     );
     eprintln!(
         "Extract: {} AI calls ({} domains)",
-        extract_calls,
-        extract_calls
+        stats.extract_calls,
+        stats.extract_calls
     );
-    eprintln!("Total: {} AI calls", total_calls);
+    eprintln!("Total: {} AI calls", stats.total_calls);
 
     Ok(())
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end: String = s.chars().take(max).collect();
-        format!("{}...", end)
-    }
-}

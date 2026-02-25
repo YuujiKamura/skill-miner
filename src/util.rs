@@ -1,6 +1,16 @@
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 
+/// Truncate a string at a safe char boundary, appending "..." if truncated.
+pub fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let end: String = s.chars().take(max_chars).collect();
+        format!("{}...", end)
+    }
+}
+
 /// Sanitize AI response: remove control characters that break JSON parsing
 pub fn sanitize_json(s: &str) -> String {
     s.chars()
@@ -41,6 +51,27 @@ mod tests {
     struct TestEntry {
         name: String,
         value: i32,
+    }
+
+    #[test]
+    fn test_truncate_short_string() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_exact_length() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_long_string() {
+        assert_eq!(truncate("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn test_truncate_multibyte() {
+        // Japanese characters are multi-byte but each is 1 char
+        assert_eq!(truncate("あいうえお", 3), "あいう...");
     }
 
     #[test]

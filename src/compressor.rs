@@ -1,4 +1,5 @@
 use crate::types::{Conversation, ConversationSummary, Role};
+use crate::util;
 use std::collections::HashSet;
 
 /// Compress a full conversation into a summary suitable for classification.
@@ -142,7 +143,7 @@ pub fn format_for_classification(summaries: &[ConversationSummary]) -> String {
             s.message_count,
             s.cwd.as_deref().unwrap_or("?"),
             s.topics.join(", "),
-            truncate(&s.first_message, 200),
+            util::truncate(&s.first_message, 200),
         ));
         if !s.files_touched.is_empty() {
             let files: Vec<_> = s.files_touched.iter().take(10).map(|f| f.as_str()).collect();
@@ -158,11 +159,3 @@ pub fn format_for_classification(summaries: &[ConversationSummary]) -> String {
     output
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
-        format!("{}...", &s[..end])
-    }
-}

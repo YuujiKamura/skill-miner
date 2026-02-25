@@ -1,23 +1,40 @@
+use crate::error::SkillMinerError;
 use crate::parser;
-use crate::types::{ClassifiedConversation, DomainCluster, KnowledgePattern, Role};
+use crate::types::{ClassifiedConversation, Conversation, DomainCluster, KnowledgePattern, Role};
 use crate::util;
-use anyhow::Result;
 use cli_ai_analyzer::{prompt, AnalyzeOptions};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
+/// Prompt template for extraction (loaded from file at compile time).
+const EXTRACT_PROMPT: &str = include_str!("../prompts/extract.txt");
+
 /// Extract knowledge patterns from a domain cluster.
-/// Reads full conversation content for deeper analysis.
+/// When `conv_map` is provided, uses pre-parsed conversations to avoid re-parsing.
+/// When `conv_map` is None (e.g. standalone `extract` command), falls back to parsing from source_path.
 pub fn extract_patterns(
     domain: &str,
     conversations: &[&ClassifiedConversation],
+    conv_map: Option<&HashMap<String, &Conversation>>,
     options: &AnalyzeOptions,
-) -> Result<DomainCluster> {
+) -> Result<DomainCluster, SkillMinerError> {
     // Build context from full conversations (limited to avoid token overflow)
     let mut context_parts = Vec::new();
 
     for (i, conv) in conversations.iter().take(20).enumerate() {
-        let full_conv = parser::parse_conversation(&conv.summary.source_path)?;
+        // Use pre-parsed conversation from map if available, otherwise parse from file
+        let owned_conv;
+        let full_conv = if let Some(map) = conv_map {
+            if let Some(c) = map.get(&conv.summary.id) {
+                *c
+            } else {
+                owned_conv = parser::parse_conversation(&conv.summary.source_path)?;
+                &owned_conv
+            }
+        } else {
+            owned_conv = parser::parse_conversation(&conv.summary.source_path)?;
+            &owned_conv
+        };
 
         // Extract user-assistant pairs (first 10 exchanges per conversation)
         let mut exchanges = Vec::new();
@@ -26,11 +43,11 @@ pub fn extract_patterns(
         for msg in full_conv.messages.iter().take(20) {
             match msg.role {
                 Role::User => {
-                    user_msg = Some(truncate(&msg.content, 300));
+                    user_msg = Some(util::truncate(&msg.content, 300));
                 }
                 Role::Assistant => {
                     if let Some(u) = user_msg.take() {
-                        let a = truncate(&msg.content, 500);
+                        let a = util::truncate(&msg.content, 500);
                         exchanges.push(format!("U: {}\nA: {}", u, a));
                     }
                 }
@@ -62,26 +79,14 @@ pub fn extract_patterns(
 
     let context = context_parts.join("\n\n");
 
-    let prompt_text = format!(
-        r#"以下は「{domain}」分野のClaude Code会話群から抽出した要約である。
-各会話にはfiles(操作されたファイルパス)とcmds(実行されたコマンド)のメタデータが含まれる。
-この分野で繰り返し現れるパターン（手順、判断基準、設計原則、ツール使用法）を抽出せよ。
-ファイルパスやコマンドパターンも考慮し、具体的なワークフローを特定せよ。
+    let prompt_text = EXTRACT_PROMPT
+        .replace("{domain}", domain)
+        .replace("{context}", &context);
 
-JSON配列で返せ。各要素:
-{{
-  "title": "パターン名",
-  "description": "何をするパターンか",
-  "steps": ["手順1", "手順2"],
-  "frequency": 出現回数の推定
-}}
-
-会話データ:
-{context}"#
-    );
-
-    let response = prompt(&prompt_text, options.clone())?;
-    let patterns: Vec<PatternEntry> = util::parse_json_response(&response)?;
+    let response = prompt(&prompt_text, options.clone())
+        .map_err(|e| SkillMinerError::Ai(e.to_string()))?;
+    let patterns: Vec<PatternEntry> = util::parse_json_response(&response)
+        .map_err(|e| SkillMinerError::Parse(e.to_string()))?;
 
     let knowledge_patterns: Vec<KnowledgePattern> = patterns
         .into_iter()
@@ -105,20 +110,32 @@ JSON配列で返せ。各要素:
 }
 
 /// Extract patterns from all domains in parallel using rayon.
+/// When `conv_map` is provided, avoids re-parsing conversations from disk.
+/// `max_parallel` controls the maximum number of concurrent AI calls.
 /// Returns (clusters, extract_call_count).
 pub fn extract_all_parallel(
     groups: &HashMap<String, Vec<&ClassifiedConversation>>,
+    conv_map: Option<&HashMap<String, &Conversation>>,
     options: &AnalyzeOptions,
-) -> Result<(Vec<DomainCluster>, usize)> {
+    max_parallel: usize,
+) -> Result<(Vec<DomainCluster>, usize), SkillMinerError> {
     let entries: Vec<_> = groups.iter().collect();
 
-    let results: Vec<Result<DomainCluster>> = entries
-        .par_iter()
-        .map(|(domain, convs)| {
-            eprintln!("  {} ({} conversations)...", domain, convs.len());
-            extract_patterns(domain, convs, options)
-        })
-        .collect();
+    let num_threads = max_parallel.min(entries.len()).max(1);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .map_err(|e| SkillMinerError::Config(format!("rayon pool: {}", e)))?;
+
+    let results: Vec<Result<DomainCluster, SkillMinerError>> = pool.install(|| {
+        entries
+            .par_iter()
+            .map(|(domain, convs)| {
+                eprintln!("  {} ({} conversations)...", domain, convs.len());
+                extract_patterns(domain, convs, conv_map, options)
+            })
+            .collect()
+    });
 
     let mut clusters = Vec::new();
     for result in results {
@@ -147,11 +164,3 @@ fn default_freq() -> usize {
     1
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end: String = s.chars().take(max).collect();
-        format!("{}...", end)
-    }
-}

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -6,7 +7,8 @@ use std::path::PathBuf;
 pub struct Message {
     pub role: Role,
     pub content: String,
-    pub timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
     /// Tool uses within this message (tool name + input summary)
     pub tool_uses: Vec<ToolUse>,
 }
@@ -37,8 +39,10 @@ pub struct Conversation {
     pub id: String,
     pub source_path: PathBuf,
     pub messages: Vec<Message>,
-    pub start_time: Option<String>,
-    pub end_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<DateTime<Utc>>,
     /// Working directory during this conversation
     pub cwd: Option<String>,
     /// Git branch if available
@@ -67,7 +71,8 @@ pub struct ConversationSummary {
     pub source_path: PathBuf,
     pub first_message: String,
     pub message_count: usize,
-    pub start_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<DateTime<Utc>>,
     pub cwd: Option<String>,
     /// Key topics extracted from the conversation
     pub topics: Vec<String>,
@@ -163,6 +168,8 @@ pub struct MineConfig {
     pub min_messages: usize,
     /// AI backend options
     pub ai_options: cli_ai_analyzer::AnalyzeOptions,
+    /// Maximum parallel AI calls for extraction
+    pub max_parallel: usize,
 }
 
 impl Default for MineConfig {
@@ -175,6 +182,7 @@ impl Default for MineConfig {
             days_back: 30,
             min_messages: 4,
             ai_options: cli_ai_analyzer::AnalyzeOptions::default(),
+            max_parallel: 4,
         }
     }
 }

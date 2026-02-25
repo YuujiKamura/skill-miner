@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use crate::error::SkillMinerError;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -11,9 +11,10 @@ pub struct HistoryEntry {
 }
 
 /// Parse history.jsonl into lightweight entries (fast: no full conversation parse)
-pub fn parse_history(path: &Path) -> Result<Vec<HistoryEntry>> {
-    let file =
-        std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+pub fn parse_history(path: &Path) -> Result<Vec<HistoryEntry>, SkillMinerError> {
+    let file = std::fs::File::open(path).map_err(|e| {
+        SkillMinerError::Parse(format!("opening {}: {}", path.display(), e))
+    })?;
     let reader = BufReader::new(file);
     let mut entries = Vec::new();
 

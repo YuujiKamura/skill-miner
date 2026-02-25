@@ -1,3 +1,4 @@
+use chrono::{TimeZone, Utc};
 use skill_miner::compressor;
 use skill_miner::parser;
 use std::path::Path;
@@ -63,10 +64,8 @@ fn compress_preserves_metadata() {
     let summary = compressor::compress(&conv);
     assert_eq!(summary.id, "sample_conversation");
     assert_eq!(summary.message_count, 6);
-    assert_eq!(
-        summary.start_time.as_deref(),
-        Some("2026-01-15T10:00:00.000Z")
-    );
+    let expected = Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap();
+    assert_eq!(summary.start_time, Some(expected));
     assert_eq!(summary.cwd.as_deref(), Some("/home/testuser/my-project"));
 }
 
