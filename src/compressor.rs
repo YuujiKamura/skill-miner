@@ -11,13 +11,40 @@ pub fn compress(conv: &Conversation) -> ConversationSummary {
         .take(500)
         .collect::<String>();
 
+    let all_tool_uses: Vec<_> = conv
+        .messages
+        .iter()
+        .flat_map(|m| m.tool_uses.iter())
+        .collect();
+
     let tools_used: Vec<String> = {
         let mut seen = HashSet::new();
-        conv.messages
+        all_tool_uses
             .iter()
-            .flat_map(|m| m.tool_uses.iter())
             .filter(|t| seen.insert(t.name.clone()))
             .map(|t| t.name.clone())
+            .collect()
+    };
+
+    // Extract file paths from Edit/Read/Write tool uses
+    let files_touched: Vec<String> = {
+        let mut seen = HashSet::new();
+        all_tool_uses
+            .iter()
+            .filter_map(|t| t.file_path.as_deref())
+            .filter(|p| seen.insert(p.to_string()))
+            .map(String::from)
+            .collect()
+    };
+
+    // Extract commands from Bash tool uses
+    let commands_used: Vec<String> = {
+        let mut seen = HashSet::new();
+        all_tool_uses
+            .iter()
+            .filter_map(|t| t.command.as_deref())
+            .filter(|c| seen.insert(c.to_string()))
+            .map(String::from)
             .collect()
     };
 
@@ -32,6 +59,8 @@ pub fn compress(conv: &Conversation) -> ConversationSummary {
         cwd: conv.cwd.clone(),
         topics,
         tools_used,
+        files_touched,
+        commands_used,
     }
 }
 
@@ -107,7 +136,7 @@ pub fn format_for_classification(summaries: &[ConversationSummary]) -> String {
 
     for (i, s) in summaries.iter().enumerate() {
         output.push_str(&format!(
-            "[{}] id={} msgs={} cwd={} topics=[{}]\n  {}\n\n",
+            "[{}] id={} msgs={} cwd={} topics=[{}]\n  {}\n",
             i,
             &s.id[..8.min(s.id.len())],
             s.message_count,
@@ -115,6 +144,15 @@ pub fn format_for_classification(summaries: &[ConversationSummary]) -> String {
             s.topics.join(", "),
             truncate(&s.first_message, 200),
         ));
+        if !s.files_touched.is_empty() {
+            let files: Vec<_> = s.files_touched.iter().take(10).map(|f| f.as_str()).collect();
+            output.push_str(&format!("  files: [{}]\n", files.join(", ")));
+        }
+        if !s.commands_used.is_empty() {
+            let cmds: Vec<_> = s.commands_used.iter().take(5).map(|c| c.as_str()).collect();
+            output.push_str(&format!("  cmds: [{}]\n", cmds.join(", ")));
+        }
+        output.push('\n');
     }
 
     output

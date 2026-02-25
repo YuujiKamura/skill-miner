@@ -23,6 +23,12 @@ pub struct ToolUse {
     pub name: String,
     /// First ~200 chars of input for context
     pub input_summary: String,
+    /// File path for Edit/Read/Write tools
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    /// Command string for Bash tool (first ~100 chars)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 /// A parsed conversation (one session)
@@ -67,6 +73,12 @@ pub struct ConversationSummary {
     pub topics: Vec<String>,
     /// Tools used (deduplicated)
     pub tools_used: Vec<String>,
+    /// File paths touched via Edit/Read/Write (deduplicated)
+    #[serde(default)]
+    pub files_touched: Vec<String>,
+    /// Commands used via Bash (deduplicated, first ~100 chars each)
+    #[serde(default)]
+    pub commands_used: Vec<String>,
 }
 
 /// Domain classification result
@@ -123,6 +135,17 @@ pub struct SkillDraft {
     pub existing_skill: Option<PathBuf>,
     /// Diff against existing skill if applicable
     pub diff: Option<String>,
+}
+
+/// Statistics from a pipeline run
+#[derive(Debug, Clone, Default)]
+pub struct PipelineStats {
+    /// Number of AI calls for classification (batch count)
+    pub classify_calls: usize,
+    /// Number of AI calls for extraction (domain count)
+    pub extract_calls: usize,
+    /// Total AI calls
+    pub total_calls: usize,
 }
 
 /// Pipeline configuration

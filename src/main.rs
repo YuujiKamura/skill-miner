@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use skill_miner::{classifier, compressor, extractor, generator, parser, MineConfig};
+use skill_miner::{classifier, compressor, extractor, generator, history, parser, MineConfig};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -21,6 +21,12 @@ enum Command {
         /// Minimum messages per conversation
         #[arg(short, long, default_value = "4")]
         min_messages: usize,
+        /// Fast mode: preview from history.jsonl without full conversation parse
+        #[arg(short, long)]
+        fast: bool,
+        /// Filter by project path (substring match, for --fast mode)
+        #[arg(short, long)]
+        project: Option<String>,
     },
 
     /// Classify conversations by domain
@@ -74,7 +80,13 @@ fn main() -> Result<()> {
     let config = MineConfig::default();
 
     match cli.command {
-        Command::Scan { days, min_messages } => cmd_scan(&config, days, min_messages),
+        Command::Scan { days, min_messages, fast, project } => {
+            if fast {
+                cmd_scan_fast(&config, days, project)
+            } else {
+                cmd_scan(&config, days, min_messages)
+            }
+        }
         Command::Classify {
             days,
             min_messages,
@@ -132,6 +144,63 @@ fn cmd_scan(config: &MineConfig, days: u32, min_messages: usize) -> Result<()> {
     Ok(())
 }
 
+fn cmd_scan_fast(config: &MineConfig, days: u32, project: Option<String>) -> Result<()> {
+    eprintln!("Fast scan from history.jsonl (last {} days)...", days);
+
+    let entries = history::parse_history(&config.history_path)?;
+    let filtered = history::filter_by_days(&entries, days);
+
+    let filtered: Vec<_> = if let Some(ref proj) = project {
+        history::filter_by_project(
+            &filtered.into_iter().cloned().collect::<Vec<_>>(),
+            proj,
+        )
+        .into_iter()
+        .cloned()
+        .collect()
+    } else {
+        filtered.into_iter().cloned().collect()
+    };
+
+    println!("=== Fast Scan (history.jsonl) ===");
+    println!("Entries: {}", filtered.len());
+    if let Some(ref proj) = project {
+        println!("Project filter: {}", proj);
+    }
+    println!();
+
+    // Group by project
+    let mut by_project: std::collections::HashMap<String, Vec<&history::HistoryEntry>> =
+        std::collections::HashMap::new();
+    for entry in &filtered {
+        by_project
+            .entry(entry.project.clone())
+            .or_default()
+            .push(entry);
+    }
+
+    let mut projects: Vec<_> = by_project.iter().collect();
+    projects.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    for (proj, entries) in projects.iter().take(20) {
+        println!("[{}] {} entries", proj, entries.len());
+        // Show latest 3 entries
+        let mut sorted: Vec<_> = entries.iter().copied().collect();
+        sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        for e in sorted.iter().take(3) {
+            let display = truncate(&e.display, 80);
+            println!("  {}", display);
+        }
+        println!();
+    }
+
+    if projects.len() > 20 {
+        println!("... and {} more projects", projects.len() - 20);
+    }
+
+    Ok(())
+}
+
 fn cmd_classify(
     config: &MineConfig,
     days: u32,
@@ -174,18 +243,17 @@ fn cmd_extract(config: &MineConfig, input: PathBuf, output: Option<PathBuf>) -> 
 
     let groups = classifier::group_by_domain(&classified);
 
-    eprintln!("Extracting patterns from {} domains...", groups.len());
+    eprintln!("Extracting patterns from {} domains (parallel)...", groups.len());
 
-    let mut clusters = Vec::new();
-    for (domain, convs) in &groups {
-        eprintln!("  {} ({} conversations)...", domain, convs.len());
-        let cluster = extractor::extract_patterns(domain, convs, &config.ai_options)?;
+    let (clusters, _extract_calls) =
+        extractor::extract_all_parallel(&groups, &config.ai_options)?;
+
+    for cluster in &clusters {
         println!(
             "  {} → {} patterns",
-            domain,
+            cluster.domain,
             cluster.patterns.len()
         );
-        clusters.push(cluster);
     }
 
     if let Some(path) = output {
@@ -215,7 +283,19 @@ fn cmd_generate(config: &MineConfig, input: PathBuf, output: Option<PathBuf>) ->
         } else {
             "NEW"
         };
-        println!("[{}] {}: {}", status, draft.name, truncate(&draft.description, 80));
+
+        if let Some(ref diff) = draft.diff {
+            let (added, removed) = generator::parse_diff_summary(diff);
+            println!(
+                "[{}] {}: +{} lines, -{} lines",
+                status, draft.name, added, removed
+            );
+            for line in diff.lines() {
+                println!("  {}", line);
+            }
+        } else {
+            println!("[{}] {}: {}", status, draft.name, truncate(&draft.description, 80));
+        }
 
         let content = generator::format_skill_md(draft);
         let path = out_dir.join(format!("{}.md", draft.name));
@@ -249,13 +329,15 @@ fn cmd_mine(
         eprintln!("  {} → {} conversations", domain, convs.len());
     }
 
-    // Step 3: Extract
-    eprintln!("[3/4] Extracting patterns...");
-    let mut clusters = Vec::new();
-    for (domain, convs) in &groups {
-        let cluster = extractor::extract_patterns(domain, convs, &config.ai_options)?;
-        eprintln!("  {} → {} patterns", domain, cluster.patterns.len());
-        clusters.push(cluster);
+    // Stats: classify calls = number of batches (50 per batch)
+    let classify_calls = (summaries.len() + 49) / 50; // ceil division
+
+    // Step 3: Extract (parallel)
+    eprintln!("[3/4] Extracting patterns (parallel)...");
+    let (clusters, extract_calls) =
+        extractor::extract_all_parallel(&groups, &config.ai_options)?;
+    for cluster in &clusters {
+        eprintln!("  {} → {} patterns", cluster.domain, cluster.patterns.len());
     }
 
     // Step 4: Generate
@@ -269,7 +351,12 @@ fn cmd_mine(
         } else {
             "NEW"
         };
-        println!("[{}] {}", status, draft.name);
+        if let Some(ref diff) = draft.diff {
+            let (added, removed) = generator::parse_diff_summary(diff);
+            println!("[{}] {}: +{} lines, -{} lines", status, draft.name, added, removed);
+        } else {
+            println!("[{}] {}", status, draft.name);
+        }
     }
 
     if !dry_run {
@@ -285,6 +372,22 @@ fn cmd_mine(
     } else {
         eprintln!("\nDry run: {} drafts would be generated", drafts.len());
     }
+
+    // Stats summary
+    let total_calls = classify_calls + extract_calls;
+    eprintln!();
+    eprintln!("=== Stats ===");
+    eprintln!(
+        "Classify: {} AI calls ({} conversations / 50 per batch)",
+        classify_calls,
+        summaries.len()
+    );
+    eprintln!(
+        "Extract: {} AI calls ({} domains)",
+        extract_calls,
+        extract_calls
+    );
+    eprintln!("Total: {} AI calls", total_calls);
 
     Ok(())
 }

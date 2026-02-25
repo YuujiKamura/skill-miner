@@ -1,0 +1,8 @@
+{"type":"human","timestamp":"2026-01-15T10:00:00.000Z","cwd":"/home/testuser/my-project","gitBranch":"main","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>You are an AI assistant.</system-reminder>Fix the build error in main.rs"}]}}
+{"type":"assistant","timestamp":"2026-01-15T10:00:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll look at the build error in main.rs."},{"type":"tool_use","name":"Read","input":{"file_path":"/home/testuser/my-project/src/main.rs"}}]}}
+{"type":"human","timestamp":"2026-01-15T10:01:00.000Z","message":{"role":"user","content":[{"type":"text","text":"The error is on line 42, a missing semicolon."}]}}
+{"type":"assistant","timestamp":"2026-01-15T10:01:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Found it. I'll add the missing semicolon on line 42."}]}}
+{"type":"human","timestamp":"2026-01-15T10:02:00.000Z","message":{"role":"user","content":"Now run cargo test to verify."}}
+{"type":"assistant","timestamp":"2026-01-15T10:02:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"All tests pass. The build error is fixed."},{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}
+{"type":"human","timestamp":"2026-01-15T10:03:00.000Z","isMeta":true,"message":{"role":"user","content":"/clear"}}
+{"type":"file-history-snapshot","timestamp":"2026-01-15T10:03:30.000Z","data":{"files":["/home/testuser/my-project/src/main.rs"]}}

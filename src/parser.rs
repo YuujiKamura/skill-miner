@@ -135,13 +135,36 @@ fn extract_content(message: &serde_json::Value) -> (String, Vec<ToolUse>) {
                             .and_then(|n| n.as_str())
                             .unwrap_or("unknown")
                             .to_string();
-                        let input = block.get("input").map(|i| {
+                        let input_val = block.get("input");
+                        let input = input_val.map(|i| {
                             let s = i.to_string();
                             truncate_str(&s, 200)
                         }).unwrap_or_default();
+
+                        // Extract file_path for Edit/Read/Write tools
+                        let file_path = match name.as_str() {
+                            "Edit" | "Read" | "Write" => input_val
+                                .and_then(|i| i.get("file_path"))
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            _ => None,
+                        };
+
+                        // Extract command for Bash tool
+                        let command = if name == "Bash" {
+                            input_val
+                                .and_then(|i| i.get("command"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| truncate_str(s, 100))
+                        } else {
+                            None
+                        };
+
                         tool_uses.push(ToolUse {
                             name,
                             input_summary: input,
+                            file_path,
+                            command,
                         });
                     }
                     Some("tool_result") => {
