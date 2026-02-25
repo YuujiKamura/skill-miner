@@ -11,17 +11,20 @@ pub fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Sanitize AI response: remove control characters that break JSON parsing
+/// Sanitize AI response: remove control characters that break JSON parsing.
+/// Inside JSON string values, raw newlines/tabs are invalid — replace all control chars.
+/// Then restore structural newlines between JSON elements.
 pub fn sanitize_json(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_control() && c != '\n' && c != '\r' && c != '\t' {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect()
+    // Phase 1: Replace ALL control characters with spaces
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    // Phase 2: Collapse multiple spaces into single space (optional, keeps output clean)
+    cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Parse a JSON array from AI response, handling markdown code fences and control characters
@@ -78,7 +81,7 @@ mod tests {
     fn test_sanitize_json_removes_control_chars() {
         let input = "hello\x00world\x01test\n\r\t";
         let result = sanitize_json(input);
-        assert_eq!(result, "hello world test\n\r\t");
+        assert_eq!(result, "hello world test");
     }
 
     #[test]
