@@ -1,0 +1,286 @@
+use crate::types::{Conversation, Message, Role, ToolUse};
+use anyhow::{Context, Result};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+
+/// Parse a single conversation JSONL file into a Conversation struct
+pub fn parse_conversation(path: &Path) -> Result<Conversation> {
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = BufReader::new(file);
+
+    let id = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let mut messages = Vec::new();
+    let mut start_time = None;
+    let mut end_time = None;
+    let mut cwd = None;
+    let mut git_branch = None;
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let entry: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Skip non-message entries
+        let entry_type = entry.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if entry_type == "file-history-snapshot" {
+            continue;
+        }
+
+        // Extract metadata from first entry
+        if cwd.is_none() {
+            cwd = entry.get("cwd").and_then(|v| v.as_str()).map(String::from);
+        }
+        if git_branch.is_none() {
+            git_branch = entry
+                .get("gitBranch")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+        }
+
+        let timestamp = entry
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if start_time.is_none() && !timestamp.is_empty() {
+            start_time = Some(timestamp.clone());
+        }
+        if !timestamp.is_empty() {
+            end_time = Some(timestamp.clone());
+        }
+
+        // Skip meta messages (commands, system)
+        if entry.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+
+        let message = match entry.get("message") {
+            Some(msg) => msg,
+            None => continue,
+        };
+
+        let role_str = message.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let role = match role_str {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            _ => continue,
+        };
+
+        let (content, tool_uses) = extract_content(message);
+
+        // Skip empty or system-only content
+        if content.trim().is_empty() && tool_uses.is_empty() {
+            continue;
+        }
+
+        // Skip system-reminder-only user messages
+        if role == Role::User && is_system_only(&content) {
+            continue;
+        }
+
+        messages.push(Message {
+            role,
+            content,
+            timestamp,
+            tool_uses,
+        });
+    }
+
+    Ok(Conversation {
+        id,
+        source_path: path.to_path_buf(),
+        messages,
+        start_time,
+        end_time,
+        cwd,
+        git_branch,
+    })
+}
+
+/// Extract text content and tool uses from a message value
+fn extract_content(message: &serde_json::Value) -> (String, Vec<ToolUse>) {
+    let content = message.get("content");
+    let mut text_parts = Vec::new();
+    let mut tool_uses = Vec::new();
+
+    match content {
+        Some(serde_json::Value::String(s)) => {
+            text_parts.push(strip_tags(s));
+        }
+        Some(serde_json::Value::Array(blocks)) => {
+            for block in blocks {
+                match block.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                            text_parts.push(strip_tags(text));
+                        }
+                    }
+                    Some("tool_use") => {
+                        let name = block
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let input = block.get("input").map(|i| {
+                            let s = i.to_string();
+                            truncate_str(&s, 200)
+                        }).unwrap_or_default();
+                        tool_uses.push(ToolUse {
+                            name,
+                            input_summary: input,
+                        });
+                    }
+                    Some("tool_result") => {
+                        // Skip tool results - they're execution output, not knowledge
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+
+    (text_parts.join("\n"), tool_uses)
+}
+
+/// Remove XML-like system tags from content
+fn strip_tags(s: &str) -> String {
+    let s = remove_tag_block(s, "system-reminder");
+    let s = remove_tag_block(&s, "local-command-caveat");
+    let s = remove_tag_block(&s, "command-name");
+    let s = remove_tag_block(&s, "command-message");
+    let s = remove_tag_block(&s, "command-args");
+
+    s.trim().to_string()
+}
+
+fn remove_tag_block(s: &str, tag: &str) -> String {
+    let open = format!("<{}", tag);
+    let close = format!("</{}>", tag);
+    let mut result = s.to_string();
+
+    while let Some(start) = result.find(&open) {
+        if let Some(end) = result[start..].find(&close) {
+            let end_pos = start + end + close.len();
+            result = format!("{}{}", &result[..start], &result[end_pos..]);
+        } else {
+            break;
+        }
+    }
+
+    result
+}
+
+/// Truncate a string at a safe char boundary
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let end: String = s.chars().take(max_chars).collect();
+        format!("{}...", end)
+    }
+}
+
+/// Check if content is only system tags with no real user input
+fn is_system_only(content: &str) -> bool {
+    let stripped = content.trim();
+    stripped.is_empty()
+        || stripped.starts_with("<local-command-caveat>")
+        || stripped.starts_with("<command-name>")
+}
+
+/// Discover all conversation JSONL files in a project directory
+pub fn discover_conversations(projects_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+
+    if !projects_dir.exists() {
+        anyhow::bail!("Projects directory not found: {}", projects_dir.display());
+    }
+
+    // Walk project subdirectories
+    for entry in std::fs::read_dir(projects_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            // Look for .jsonl files inside project dirs
+            for sub_entry in std::fs::read_dir(&path)? {
+                let sub_entry = sub_entry?;
+                let sub_path = sub_entry.path();
+                if sub_path.extension().map(|e| e == "jsonl").unwrap_or(false) && sub_path.is_file()
+                {
+                    paths.push(sub_path);
+                }
+            }
+        }
+    }
+
+    // Sort by modification time (newest first)
+    paths.sort_by(|a, b| {
+        let a_time = std::fs::metadata(a)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let b_time = std::fs::metadata(b)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        b_time.cmp(&a_time)
+    });
+
+    Ok(paths)
+}
+
+/// Parse all conversations, filtering by minimum message count
+pub fn parse_all(projects_dir: &Path, min_messages: usize) -> Result<Vec<Conversation>> {
+    let paths = discover_conversations(projects_dir)?;
+    let mut conversations = Vec::new();
+
+    for path in &paths {
+        match parse_conversation(path) {
+            Ok(conv) if conv.message_count() >= min_messages => {
+                conversations.push(conv);
+            }
+            Ok(_) => {} // too short, skip
+            Err(e) => {
+                eprintln!("Warning: skipping {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    Ok(conversations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_tags() {
+        let input = "<system-reminder>foo</system-reminder>hello world";
+        assert_eq!(strip_tags(input), "hello world");
+    }
+
+    #[test]
+    fn test_is_system_only() {
+        assert!(is_system_only("<local-command-caveat>some caveat</local-command-caveat>"));
+        assert!(!is_system_only("actual user message"));
+    }
+
+    #[test]
+    fn test_remove_tag_block() {
+        let s = "before<system-reminder>hidden</system-reminder>after";
+        assert_eq!(remove_tag_block(s, "system-reminder"), "beforeafter");
+    }
+}
