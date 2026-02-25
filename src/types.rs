@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::PathBuf;
 
 /// A single message extracted from JSONL conversation history
@@ -140,6 +141,107 @@ pub struct SkillDraft {
     pub existing_skill: Option<PathBuf>,
     /// Diff against existing skill if applicable
     pub diff: Option<String>,
+}
+
+// ── State management types ──
+
+/// Status of a skill draft in the review pipeline
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DraftStatus {
+    Draft,
+    Approved,
+    Deployed,
+    Rejected,
+}
+
+impl fmt::Display for DraftStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DraftStatus::Draft => write!(f, "draft"),
+            DraftStatus::Approved => write!(f, "approved"),
+            DraftStatus::Deployed => write!(f, "deployed"),
+            DraftStatus::Rejected => write!(f, "rejected"),
+        }
+    }
+}
+
+/// A single entry in the drafts manifest
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftEntry {
+    pub slug: String,
+    pub domain: String,
+    pub status: DraftStatus,
+    pub pattern_count: usize,
+    pub conversation_count: usize,
+    pub generated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployed_at: Option<DateTime<Utc>>,
+    pub content_hash: String,
+}
+
+/// Manifest tracking all skill drafts and their states
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Manifest {
+    pub version: String,
+    pub generated_at: DateTime<Utc>,
+    pub entries: Vec<DraftEntry>,
+}
+
+// ── Bundle types (export/import/trading) ──
+
+/// A portable skill bundle for sharing between environments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillBundle {
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    pub description: String,
+    pub created_at: DateTime<Utc>,
+    pub source: BundleStats,
+    pub skills: Vec<BundleSkill>,
+}
+
+/// Source statistics for a skill bundle
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleStats {
+    pub conversations: usize,
+    pub domains: usize,
+    pub patterns: usize,
+}
+
+/// A single skill within a bundle
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleSkill {
+    pub slug: String,
+    pub domain: String,
+    pub pattern_count: usize,
+    pub content_hash: String,
+}
+
+/// Result of deploying a single skill
+#[derive(Debug, Clone)]
+pub struct DeployResult {
+    pub slug: String,
+    pub target_path: PathBuf,
+    pub was_update: bool,
+}
+
+/// Options for pruning drafts
+#[derive(Debug, Clone, Default)]
+pub struct PruneOptions {
+    pub duplicates: bool,
+    pub misc: bool,
+    pub rejected: bool,
+}
+
+/// Result of importing a bundle
+#[derive(Debug, Clone)]
+pub struct ImportResult {
+    pub imported: Vec<String>,
+    pub skipped: Vec<String>,
+    pub conflicted: Vec<String>,
 }
 
 /// Statistics from a pipeline run

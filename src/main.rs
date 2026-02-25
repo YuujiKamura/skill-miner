@@ -1,6 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use skill_miner::{classifier, compressor, extractor, generator, history, parser, util, MineConfig, PipelineStats};
+use skill_miner::{
+    bundle, classifier, compressor, deployer, extractor, generator, history, manifest, parser,
+    util, DraftStatus, MineConfig, PipelineStats, PruneOptions,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -80,6 +83,107 @@ enum Command {
         #[arg(long, default_value = "4")]
         parallel: usize,
     },
+
+    /// List skill drafts with their status
+    List {
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Show diff between draft and deployed skill
+    Diff {
+        /// Skill slug name (omit for all)
+        name: Option<String>,
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Approve skill drafts for deployment
+    Approve {
+        /// Skill slugs to approve
+        names: Vec<String>,
+        /// Approve all drafts
+        #[arg(long)]
+        all: bool,
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Reject skill drafts
+    Reject {
+        /// Skill slugs to reject
+        names: Vec<String>,
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Deploy approved skills to ~/.claude/skills/
+    Deploy {
+        /// Deploy specific skills by name (or use --approved)
+        names: Vec<String>,
+        /// Deploy all approved drafts
+        #[arg(long)]
+        approved: bool,
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Remove low-quality or duplicate drafts
+    Prune {
+        /// Remove "misc" domain drafts
+        #[arg(long)]
+        misc: bool,
+        /// Remove rejected drafts
+        #[arg(long)]
+        rejected: bool,
+        /// Remove Japanese-named duplicates
+        #[arg(long)]
+        duplicates: bool,
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Export skills as a portable .skillpack bundle
+    Export {
+        /// Output directory for the bundle
+        output: PathBuf,
+        /// Bundle name
+        #[arg(long, default_value = "my-skills")]
+        name: String,
+        /// Bundle author
+        #[arg(long)]
+        author: Option<String>,
+        /// Bundle description
+        #[arg(long, default_value = "Exported skill bundle")]
+        description: String,
+        /// Only export approved/deployed skills
+        #[arg(long)]
+        approved_only: bool,
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Import skills from a .skillpack bundle
+    Import {
+        /// Path to the .skillpack directory
+        bundle_path: PathBuf,
+        /// Drafts directory to import into
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Verify integrity of a .skillpack bundle
+    Verify {
+        /// Path to the .skillpack directory
+        bundle_path: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -108,6 +212,31 @@ fn main() -> Result<()> {
             dry_run,
             parallel,
         } => cmd_mine(&config, days, min_messages, output, dry_run, parallel),
+        Command::List { dir } => cmd_list(&config, dir),
+        Command::Diff { name, dir } => cmd_diff(&config, name, dir),
+        Command::Approve { names, all, dir } => cmd_approve(&config, names, all, dir),
+        Command::Reject { names, dir } => cmd_reject(&config, names, dir),
+        Command::Deploy {
+            names,
+            approved,
+            dir,
+        } => cmd_deploy(&config, names, approved, dir),
+        Command::Prune {
+            misc,
+            rejected,
+            duplicates,
+            dir,
+        } => cmd_prune(&config, misc, rejected, duplicates, dir),
+        Command::Export {
+            output,
+            name,
+            author,
+            description,
+            approved_only,
+            dir,
+        } => cmd_export(&config, output, name, author, description, approved_only, dir),
+        Command::Import { bundle_path, dir } => cmd_import(&config, bundle_path, dir),
+        Command::Verify { bundle_path } => cmd_verify(bundle_path),
     }
 }
 
@@ -384,7 +513,12 @@ fn cmd_mine(
             let path = out_dir.join(format!("{}.md", draft.name));
             std::fs::write(&path, content)?;
         }
-        eprintln!("\nWrote {} drafts to {}", drafts.len(), out_dir.display());
+
+        // Write manifest.toml alongside drafts
+        let mf = manifest::create_from_drafts(&drafts, &clusters, &out_dir);
+        manifest::write_manifest(&out_dir, &mf)?;
+
+        eprintln!("\nWrote {} drafts + manifest.toml to {}", drafts.len(), out_dir.display());
     } else {
         eprintln!("\nDry run: {} drafts would be generated", drafts.len());
     }
@@ -408,6 +542,280 @@ fn cmd_mine(
         stats.extract_calls
     );
     eprintln!("Total: {} AI calls", stats.total_calls);
+
+    Ok(())
+}
+
+// ── State management commands ──
+
+fn resolve_drafts_dir(_config: &MineConfig, dir: Option<PathBuf>) -> PathBuf {
+    dir.unwrap_or_else(|| PathBuf::from("./skill-drafts"))
+}
+
+fn load_or_create_manifest(dir: &std::path::Path) -> Result<skill_miner::Manifest> {
+    match manifest::read_manifest(dir) {
+        Ok(m) => Ok(m),
+        Err(_) => {
+            eprintln!("No manifest.toml found, scanning .md files...");
+            let m = manifest::create_from_directory(dir)?;
+            manifest::write_manifest(dir, &m)?;
+            Ok(m)
+        }
+    }
+}
+
+fn cmd_list(config: &MineConfig, dir: Option<PathBuf>) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+    let mf = load_or_create_manifest(&drafts_dir)?;
+
+    println!(
+        "=== Skill Drafts ({} total) ===\n",
+        mf.entries.len()
+    );
+
+    // Sort: deployed first, then approved, then draft, then rejected
+    let mut entries: Vec<_> = mf.entries.iter().collect();
+    entries.sort_by_key(|e| match e.status {
+        DraftStatus::Deployed => 0,
+        DraftStatus::Approved => 1,
+        DraftStatus::Draft => 2,
+        DraftStatus::Rejected => 3,
+    });
+
+    for e in &entries {
+        let deployed_info = if let Some(dt) = e.deployed_at {
+            format!("  deployed: {}", dt.format("%Y-%m-%d"))
+        } else {
+            String::new()
+        };
+        println!(
+            "[{:9}] {:<20} {:<12} {} patterns{}",
+            e.status.to_string(),
+            e.slug,
+            e.domain,
+            e.pattern_count,
+            deployed_info
+        );
+    }
+
+    Ok(())
+}
+
+fn cmd_diff(config: &MineConfig, name: Option<String>, dir: Option<PathBuf>) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+
+    if let Some(slug) = name {
+        let result = deployer::diff_skill(&drafts_dir, &config.skills_dir, &slug)?;
+        println!("{}", result);
+    } else {
+        // Diff all
+        let mf = load_or_create_manifest(&drafts_dir)?;
+        for entry in &mf.entries {
+            let result =
+                deployer::diff_skill(&drafts_dir, &config.skills_dir, &entry.slug)?;
+            println!("{}", result);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_approve(
+    config: &MineConfig,
+    names: Vec<String>,
+    all: bool,
+    dir: Option<PathBuf>,
+) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+    let mut mf = load_or_create_manifest(&drafts_dir)?;
+
+    let slugs: Vec<String> = if all {
+        mf.entries
+            .iter()
+            .filter(|e| e.status == DraftStatus::Draft)
+            .map(|e| e.slug.clone())
+            .collect()
+    } else {
+        names
+    };
+
+    for slug in &slugs {
+        match manifest::update_status(&mut mf, slug, DraftStatus::Approved) {
+            Ok(()) => println!("[approved] {}", slug),
+            Err(e) => eprintln!("  skip {}: {}", slug, e),
+        }
+    }
+
+    manifest::write_manifest(&drafts_dir, &mf)?;
+    eprintln!("\nApproved {} drafts", slugs.len());
+
+    Ok(())
+}
+
+fn cmd_reject(config: &MineConfig, names: Vec<String>, dir: Option<PathBuf>) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+    let mut mf = load_or_create_manifest(&drafts_dir)?;
+
+    for slug in &names {
+        match manifest::update_status(&mut mf, slug, DraftStatus::Rejected) {
+            Ok(()) => println!("[rejected] {}", slug),
+            Err(e) => eprintln!("  skip {}: {}", slug, e),
+        }
+    }
+
+    manifest::write_manifest(&drafts_dir, &mf)?;
+    Ok(())
+}
+
+fn cmd_deploy(
+    config: &MineConfig,
+    names: Vec<String>,
+    approved: bool,
+    dir: Option<PathBuf>,
+) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+    let mut mf = load_or_create_manifest(&drafts_dir)?;
+
+    let results = if approved {
+        deployer::deploy_approved(&drafts_dir, &config.skills_dir, &mut mf)?
+    } else if !names.is_empty() {
+        deployer::deploy_by_names(&drafts_dir, &config.skills_dir, &mut mf, &names)?
+    } else {
+        eprintln!("Specify skill names or use --approved");
+        return Ok(());
+    };
+
+    for r in &results {
+        let action = if r.was_update { "updated" } else { "created" };
+        println!("[{}] {} → {}", action, r.slug, r.target_path.display());
+    }
+
+    manifest::write_manifest(&drafts_dir, &mf)?;
+    eprintln!("\nDeployed {} skills to {}", results.len(), config.skills_dir.display());
+
+    Ok(())
+}
+
+fn cmd_prune(
+    config: &MineConfig,
+    misc: bool,
+    rejected: bool,
+    duplicates: bool,
+    dir: Option<PathBuf>,
+) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+    let mut mf = load_or_create_manifest(&drafts_dir)?;
+
+    let opts = PruneOptions {
+        misc,
+        rejected,
+        duplicates,
+    };
+
+    if !misc && !rejected && !duplicates {
+        eprintln!("Specify at least one prune option: --misc, --rejected, --duplicates");
+        return Ok(());
+    }
+
+    let removed = deployer::prune(&drafts_dir, &mut mf, &opts)?;
+
+    for slug in &removed {
+        println!("[removed] {}", slug);
+    }
+
+    manifest::write_manifest(&drafts_dir, &mf)?;
+    eprintln!("\nPruned {} drafts", removed.len());
+
+    Ok(())
+}
+
+fn cmd_export(
+    config: &MineConfig,
+    output: PathBuf,
+    name: String,
+    author: Option<String>,
+    description: String,
+    approved_only: bool,
+    dir: Option<PathBuf>,
+) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+    let mf = load_or_create_manifest(&drafts_dir)?;
+
+    let opts = bundle::ExportOptions {
+        approved_only,
+        name,
+        author,
+        description,
+    };
+
+    let bun = bundle::export_bundle(&drafts_dir, &output, &mf, &opts)?;
+
+    println!("=== Exported Bundle ===");
+    println!("Name: {}", bun.name);
+    println!("Skills: {}", bun.skills.len());
+    println!(
+        "Source: {} conversations, {} domains, {} patterns",
+        bun.source.conversations, bun.source.domains, bun.source.patterns
+    );
+    println!("Output: {}", output.display());
+
+    Ok(())
+}
+
+fn cmd_import(config: &MineConfig, bundle_path: PathBuf, dir: Option<PathBuf>) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+    let mut mf = load_or_create_manifest(&drafts_dir)?;
+
+    let result = bundle::import_bundle(&bundle_path, &drafts_dir, &mut mf)?;
+
+    if !result.imported.is_empty() {
+        println!("Imported:");
+        for slug in &result.imported {
+            println!("  + {}", slug);
+        }
+    }
+    if !result.skipped.is_empty() {
+        println!("Skipped (identical):");
+        for slug in &result.skipped {
+            println!("  = {}", slug);
+        }
+    }
+    if !result.conflicted.is_empty() {
+        println!("Conflicted (saved as .imported.md):");
+        for slug in &result.conflicted {
+            println!("  ! {}", slug);
+        }
+    }
+
+    manifest::write_manifest(&drafts_dir, &mf)?;
+
+    eprintln!(
+        "\nImport: {} new, {} skipped, {} conflicts",
+        result.imported.len(),
+        result.skipped.len(),
+        result.conflicted.len()
+    );
+
+    Ok(())
+}
+
+fn cmd_verify(bundle_path: PathBuf) -> Result<()> {
+    let errors = bundle::verify_bundle(&bundle_path)?;
+
+    if errors.is_empty() {
+        println!("Bundle integrity: OK");
+        let bun = bundle::read_bundle(&bundle_path)?;
+        println!(
+            "  {} skills, {} patterns",
+            bun.skills.len(),
+            bun.source.patterns
+        );
+    } else {
+        println!("Bundle integrity: FAILED");
+        for err in &errors {
+            println!("  {}", err);
+        }
+    }
 
     Ok(())
 }
