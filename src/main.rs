@@ -91,10 +91,10 @@ fn main() -> Result<()> {
     }
 }
 
-fn cmd_scan(config: &MineConfig, _days: u32, min_messages: usize) -> Result<()> {
-    eprintln!("Scanning conversations...");
+fn cmd_scan(config: &MineConfig, days: u32, min_messages: usize) -> Result<()> {
+    eprintln!("Scanning conversations (last {} days)...", days);
 
-    let conversations = parser::parse_all(&config.projects_dir, min_messages)?;
+    let conversations = parser::parse_all(&config.projects_dir, min_messages, days)?;
 
     eprintln!("Found {} conversations (>= {} messages)\n", conversations.len(), min_messages);
 
@@ -134,12 +134,12 @@ fn cmd_scan(config: &MineConfig, _days: u32, min_messages: usize) -> Result<()> 
 
 fn cmd_classify(
     config: &MineConfig,
-    _days: u32,
+    days: u32,
     min_messages: usize,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    eprintln!("Parsing conversations...");
-    let conversations = parser::parse_all(&config.projects_dir, min_messages)?;
+    eprintln!("Parsing conversations (last {} days)...", days);
+    let conversations = parser::parse_all(&config.projects_dir, min_messages, days)?;
     eprintln!("Found {} conversations", conversations.len());
 
     eprintln!("Compressing...");
@@ -229,14 +229,14 @@ fn cmd_generate(config: &MineConfig, input: PathBuf, output: Option<PathBuf>) ->
 
 fn cmd_mine(
     config: &MineConfig,
-    _days: u32,
+    days: u32,
     min_messages: usize,
     output: Option<PathBuf>,
     dry_run: bool,
 ) -> Result<()> {
     // Step 1: Parse
-    eprintln!("[1/4] Parsing conversations...");
-    let conversations = parser::parse_all(&config.projects_dir, min_messages)?;
+    eprintln!("[1/4] Parsing conversations (last {} days)...", days);
+    let conversations = parser::parse_all(&config.projects_dir, min_messages, days)?;
     eprintln!("  → {} conversations", conversations.len());
 
     // Step 2: Compress & Classify

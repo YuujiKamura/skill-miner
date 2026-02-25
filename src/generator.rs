@@ -1,3 +1,4 @@
+use crate::domains;
 use crate::types::{DomainCluster, SkillDraft};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -13,8 +14,8 @@ fn generate_from_cluster(cluster: &DomainCluster) -> Vec<SkillDraft> {
         return vec![];
     }
 
-    // Group patterns by similarity (for now, one skill per cluster)
-    let name = slugify(&cluster.domain);
+    // Use stable slug from domain master instead of ad-hoc slugify
+    let name = domains::normalize(&cluster.domain).slug.to_string();
     let description = build_description(cluster);
     let body = build_body(cluster);
     let sources: Vec<String> = cluster
@@ -161,21 +162,3 @@ fn load_existing_skills(skills_dir: &Path) -> Result<HashMap<String, std::path::
     Ok(skills)
 }
 
-fn slugify(s: &str) -> String {
-    // Simple slugification: lowercase, replace spaces/special chars with hyphens
-    let mut slug = String::new();
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            slug.push(c.to_ascii_lowercase());
-        } else if c == ' ' || c == '_' || c == '/' {
-            if !slug.ends_with('-') {
-                slug.push('-');
-            }
-        }
-        // Skip non-ASCII (Japanese) - use as-is for now
-        else if !c.is_ascii() {
-            slug.push(c);
-        }
-    }
-    slug.trim_matches('-').to_string()
-}

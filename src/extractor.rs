@@ -1,5 +1,6 @@
 use crate::parser;
 use crate::types::{ClassifiedConversation, DomainCluster, KnowledgePattern, Role};
+use crate::util;
 use anyhow::Result;
 use cli_ai_analyzer::{prompt, AnalyzeOptions};
 
@@ -63,7 +64,7 @@ JSON配列で返せ。各要素:
     );
 
     let response = prompt(&prompt_text, options.clone())?;
-    let patterns: Vec<PatternEntry> = parse_json_array(&response)?;
+    let patterns: Vec<PatternEntry> = util::parse_json_response(&response)?;
 
     let knowledge_patterns: Vec<KnowledgePattern> = patterns
         .into_iter()
@@ -98,38 +99,6 @@ struct PatternEntry {
 
 fn default_freq() -> usize {
     1
-}
-
-fn sanitize_json(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_control() && c != '\n' && c != '\r' && c != '\t' {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-
-fn parse_json_array(response: &str) -> Result<Vec<PatternEntry>> {
-    let sanitized = sanitize_json(response);
-    let trimmed = sanitized.trim();
-    let json_str = if let Some(start) = trimmed.find('[') {
-        let end = trimmed.rfind(']').map(|i| i + 1).unwrap_or(trimmed.len());
-        &trimmed[start..end]
-    } else {
-        trimmed
-    };
-
-    serde_json::from_str(json_str).map_err(|e| {
-        let preview: String = response.chars().take(200).collect();
-        anyhow::anyhow!(
-            "Failed to parse patterns JSON: {}\nResponse: {}",
-            e,
-            preview
-        )
-    })
 }
 
 fn truncate(s: &str, max: usize) -> String {

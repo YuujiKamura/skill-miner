@@ -1,5 +1,6 @@
 use crate::types::{Conversation, Message, Role, ToolUse};
 use anyhow::{Context, Result};
+use chrono::{DateTime, Duration, Utc};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -242,14 +243,31 @@ pub fn discover_conversations(projects_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Parse all conversations, filtering by minimum message count
-pub fn parse_all(projects_dir: &Path, min_messages: usize) -> Result<Vec<Conversation>> {
+/// Parse all conversations, filtering by minimum message count and days_back.
+/// days_back=0 means no time filter (all conversations included).
+pub fn parse_all(projects_dir: &Path, min_messages: usize, days_back: u32) -> Result<Vec<Conversation>> {
     let paths = discover_conversations(projects_dir)?;
+    let cutoff = if days_back > 0 {
+        Some(Utc::now() - Duration::days(days_back as i64))
+    } else {
+        None
+    };
     let mut conversations = Vec::new();
 
     for path in &paths {
         match parse_conversation(path) {
             Ok(conv) if conv.message_count() >= min_messages => {
+                // Apply days_back filter: skip conversations whose start_time is before cutoff.
+                // Conversations with no timestamp are always included.
+                if let Some(ref cutoff) = cutoff {
+                    if let Some(ref ts) = conv.start_time {
+                        if let Ok(dt) = ts.parse::<DateTime<Utc>>() {
+                            if dt < *cutoff {
+                                continue;
+                            }
+                        }
+                    }
+                }
                 conversations.push(conv);
             }
             Ok(_) => {} // too short, skip

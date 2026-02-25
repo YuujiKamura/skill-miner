@@ -73,8 +73,11 @@ pub struct ConversationSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassifiedConversation {
     pub summary: ConversationSummary,
-    /// Primary domain tag (e.g., "舗装", "写真管理", "PDF")
+    /// Primary domain tag (e.g., "舗装工事", "写真管理", "PDF操作")
     pub domain: String,
+    /// Stable English slug from domain master (e.g., "pavement", "photo-management")
+    #[serde(default)]
+    pub slug: String,
     /// Secondary tags
     pub tags: Vec<String>,
     /// Confidence 0.0-1.0

@@ -1,5 +1,7 @@
 use crate::compressor;
+use crate::domains;
 use crate::types::{ClassifiedConversation, ConversationSummary};
+use crate::util;
 use anyhow::Result;
 use cli_ai_analyzer::{prompt, AnalyzeOptions};
 
@@ -26,41 +28,35 @@ fn classify_batch(
     formatted_text: &str,
     options: &AnalyzeOptions,
 ) -> Result<Vec<ClassifiedConversation>> {
-    let prompt_text = format!(
-        r#"以下はClaude Codeのチャット会話の一覧である。各会話を最も適切な分野に分類せよ。
+    let domain_list = domains::prompt_domain_list();
 
-分野の例（これに限らない、必要に応じて新しい分野を作れ）:
-- 舗装工事: 施工計画、出来形管理、品質管理、温度管理、切削計算
-- 写真管理: 工事写真の整理、タグ付け、台帳作成、AI解析
-- PDF操作: PDF生成、結合、書き込み、テンプレート
-- 施工体制: 台帳作成、下請契約、安全書類、カルテ
-- スプレッドシート: Google Sheets操作、Excel操作、数式
-- Rust開発: クレート設計、ビルド、テスト、WASM
-- AI連携: Gemini/Claude API、プロンプト設計、精度改善
-- 区画線: 数量計算、DXF、調査
-- DXF/CAD: 横断図、図面生成
-- 工程管理: 週報、工程表、スケジュール
-- ツール設計: CLI設計、スキル作成、自動化
+    let prompt_text = format!(
+        r#"以下はClaude Codeのチャット会話の一覧である。各会話を以下の分野リストから最も適切なものに分類せよ。
+リスト外の分野名を使うな。必ず以下のいずれかを選べ:
+
+{domain_list}
 
 JSON配列で返せ。各要素: {{"index": 0, "domain": "分野名", "tags": ["tag1"], "confidence": 0.9}}
 
 会話一覧:
-{}"#,
-        formatted_text
+{formatted_text}"#
     );
 
     let response = prompt(&prompt_text, options.clone())?;
 
     // Parse JSON response
-    let classifications: Vec<ClassificationEntry> = parse_json_array(&response)?;
+    let classifications: Vec<ClassificationEntry> = util::parse_json_response(&response)?;
 
     let mut result = Vec::new();
     for entry in classifications {
         let idx = entry.index;
         if idx < summaries.len() {
+            // Normalize domain name to master and get stable slug
+            let domain_def = domains::normalize(&entry.domain);
             result.push(ClassifiedConversation {
                 summary: summaries[idx].clone(),
-                domain: entry.domain,
+                domain: domain_def.name.to_string(),
+                slug: domain_def.slug.to_string(),
                 tags: entry.tags,
                 confidence: entry.confidence,
             });
@@ -82,38 +78,6 @@ struct ClassificationEntry {
 
 fn default_confidence() -> f64 {
     0.5
-}
-
-/// Sanitize AI response: remove control characters that break JSON parsing
-fn sanitize_json(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_control() && c != '\n' && c != '\r' && c != '\t' {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-
-/// Parse a JSON array from AI response, handling markdown code fences
-fn parse_json_array(response: &str) -> Result<Vec<ClassificationEntry>> {
-    let sanitized = sanitize_json(response);
-    let trimmed = sanitized.trim();
-
-    // Extract JSON array from response
-    let json_str = if let Some(start) = trimmed.find('[') {
-        let end = trimmed.rfind(']').map(|i| i + 1).unwrap_or(trimmed.len());
-        &trimmed[start..end]
-    } else {
-        trimmed
-    };
-
-    serde_json::from_str(json_str).map_err(|e| {
-        let preview: String = response.chars().take(200).collect();
-        anyhow::anyhow!("Failed to parse classification JSON: {}\nResponse: {}", e, preview)
-    })
 }
 
 /// Group classified conversations by domain
