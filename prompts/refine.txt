@@ -1,0 +1,15 @@
+以下のClaude Code Skillのdescriptionを改善せよ。
+
+現在のdescription:
+{current_description}
+
+このSkillが実際に発火したときのユーザー発話（トリガーフレーズ）:
+{trigger_contexts}
+
+改善方針:
+- ユーザーが実際に使った言い回し・類義語をdescriptionに追加
+- 「〜と言われた時に使用。」のキーワード部分を実際の発話パターンで補強
+- descriptionのフォーマットは維持: "ドメイン名。(パターン概要) キーワードと言われた時に使用。"
+- 過度に長くしない（200文字以内）
+
+改善後のdescriptionだけ返せ（JSON不要、文字列のみ）。

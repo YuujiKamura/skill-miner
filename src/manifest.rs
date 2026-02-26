@@ -4,6 +4,7 @@
 use crate::error::SkillMinerError;
 use crate::types::{DraftEntry, DraftStatus, Manifest};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Compute SHA256 hash of content, returned as hex string.
@@ -126,6 +127,8 @@ pub fn create_from_drafts(
             generated_at: Utc::now(),
             deployed_at: None,
             content_hash: hash,
+            score: None,
+            fire_count: None,
         });
     }
 
@@ -133,6 +136,7 @@ pub fn create_from_drafts(
         version: "1.0".to_string(),
         generated_at: Utc::now(),
         entries,
+        mined_ids: HashSet::new(),
     }
 }
 
@@ -147,6 +151,7 @@ pub fn create_from_directory(dir: &Path) -> Result<Manifest, SkillMinerError> {
             version: "1.0".to_string(),
             generated_at: Utc::now(),
             entries,
+            mined_ids: HashSet::new(),
         });
     }
 
@@ -183,6 +188,8 @@ pub fn create_from_directory(dir: &Path) -> Result<Manifest, SkillMinerError> {
                 generated_at: Utc::now(),
                 deployed_at: None,
                 content_hash: hash,
+                score: None,
+                fire_count: None,
             });
         }
     }
@@ -191,6 +198,7 @@ pub fn create_from_directory(dir: &Path) -> Result<Manifest, SkillMinerError> {
         version: "1.0".to_string(),
         generated_at: Utc::now(),
         entries,
+        mined_ids: HashSet::new(),
     })
 }
 
@@ -233,7 +241,10 @@ mod tests {
                 generated_at: Utc::now(),
                 deployed_at: None,
                 content_hash: compute_hash("test content"),
+                score: None,
+                fire_count: None,
             }],
+            mined_ids: HashSet::new(),
         }
     }
 
@@ -278,5 +289,33 @@ mod tests {
         let manifest = make_manifest();
         assert!(find_entry(&manifest, "test-skill").is_some());
         assert!(find_entry(&manifest, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn manifest_with_mined_ids_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = make_manifest();
+        manifest.mined_ids.insert("conv-abc".to_string());
+        manifest.mined_ids.insert("conv-def".to_string());
+        write_manifest(dir.path(), &manifest).unwrap();
+        let loaded = read_manifest(dir.path()).unwrap();
+        assert_eq!(loaded.mined_ids.len(), 2);
+        assert!(loaded.mined_ids.contains("conv-abc"));
+        assert!(loaded.mined_ids.contains("conv-def"));
+    }
+
+    #[test]
+    fn manifest_backward_compat_no_mined_ids() {
+        // Old manifest without mined_ids should deserialize with empty set
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = make_manifest();
+        assert!(manifest.mined_ids.is_empty());
+        write_manifest(dir.path(), &manifest).unwrap();
+        // The written TOML should not have mined_ids key (skip_serializing_if)
+        let content = std::fs::read_to_string(dir.path().join("manifest.toml")).unwrap();
+        assert!(!content.contains("mined_ids"));
+        // Reading it back should still work
+        let loaded = read_manifest(dir.path()).unwrap();
+        assert!(loaded.mined_ids.is_empty());
     }
 }

@@ -1,7 +1,55 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
+
+// ── Dependency graph types ──
+
+/// 依存関係の種別
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DepType {
+    /// See [file](file) 形式のマークダウンリンク
+    MarkdownLink,
+    /// `スキル名` 参照（バッククォート内）
+    SkillRef,
+    /// プロジェクトパス参照
+    ProjectPath,
+}
+
+/// extract_refs が返す中間結果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawRef {
+    pub target: String,
+    pub ref_type: DepType,
+    pub line: usize,
+}
+
+/// 解決済みの依存関係
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillDependency {
+    pub from: String,
+    pub to: String,
+    pub dep_type: DepType,
+    pub line: usize,
+}
+
+/// グラフ内の1ノード（ファイル）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphNode {
+    pub path: String,
+    pub outgoing: Vec<SkillDependency>,
+    pub incoming: Vec<SkillDependency>,
+}
+
+/// 依存グラフ全体
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyGraph {
+    pub nodes: Vec<GraphNode>,
+    pub broken_links: Vec<SkillDependency>,
+    pub orphans: Vec<String>,
+}
 
 /// A single message extracted from JSONL conversation history
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +159,20 @@ pub struct DomainCluster {
     pub patterns: Vec<KnowledgePattern>,
 }
 
+/// スキル発火の記録（chat historyから抽出）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillInvocation {
+    pub skill_name: String,
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
+    /// 発火後にtool_useが続いたか（有効利用された）
+    pub was_productive: bool,
+    /// 発火直前のユーザーメッセージ（先頭200文字）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_context: Option<String>,
+}
+
 /// A reusable knowledge pattern extracted from conversations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgePattern {
@@ -178,6 +240,12 @@ pub struct DraftEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployed_at: Option<DateTime<Utc>>,
     pub content_hash: String,
+    /// Consolidation score (0.0〜1.0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    /// Number of times this skill was invoked
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fire_count: Option<usize>,
 }
 
 /// Manifest tracking all skill drafts and their states
@@ -186,6 +254,9 @@ pub struct Manifest {
     pub version: String,
     pub generated_at: DateTime<Utc>,
     pub entries: Vec<DraftEntry>,
+    /// 処理済み会話IDセット（漸増マイニングの重複排除用）
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub mined_ids: HashSet<String>,
 }
 
 // ── Bundle types (export/import/trading) ──
@@ -218,6 +289,18 @@ pub struct BundleSkill {
     pub domain: String,
     pub pattern_count: usize,
     pub content_hash: String,
+    /// Consolidation score (from source environment)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    /// Invocation count (from source environment)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fire_count: Option<usize>,
+    /// When deployed in source environment
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployed_at: Option<DateTime<Utc>>,
+    /// Referenced memory/context file paths (relative)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
 }
 
 /// Result of deploying a single skill
@@ -242,6 +325,10 @@ pub struct ImportResult {
     pub imported: Vec<String>,
     pub skipped: Vec<String>,
     pub conflicted: Vec<String>,
+    /// Context files successfully restored
+    pub context_imported: Vec<String>,
+    /// Context files that conflicted with existing files
+    pub context_conflicted: Vec<String>,
 }
 
 /// Statistics from a pipeline run

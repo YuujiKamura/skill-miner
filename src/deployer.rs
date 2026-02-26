@@ -204,6 +204,8 @@ mod tests {
             generated_at: Utc::now(),
             deployed_at: None,
             content_hash: manifest::compute_hash("test"),
+            score: None,
+            fire_count: None,
         }
     }
 
@@ -212,6 +214,7 @@ mod tests {
             version: "1.0".to_string(),
             generated_at: Utc::now(),
             entries,
+            mined_ids: std::collections::HashSet::new(),
         }
     }
 

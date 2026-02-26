@@ -1,5 +1,5 @@
 use crate::error::SkillMinerError;
-use crate::types::{Conversation, Message, Role, ToolUse};
+use crate::types::{Conversation, Message, Role, SkillInvocation, ToolUse};
 use crate::util;
 use chrono::{DateTime, Duration, Utc};
 use std::fs::File;
@@ -296,6 +296,109 @@ pub fn parse_all(projects_dir: &Path, min_messages: usize, days_back: u32) -> Re
     Ok(conversations)
 }
 
+/// Parse conversations within a specific time window [start, end).
+/// Conversations with no timestamp are excluded from windowed parsing.
+pub fn parse_window(
+    projects_dir: &Path,
+    min_messages: usize,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<Vec<Conversation>, SkillMinerError> {
+    let paths = discover_conversations(projects_dir)?;
+    let mut conversations = Vec::new();
+
+    for path in &paths {
+        match parse_conversation(path) {
+            Ok(conv) if conv.message_count() >= min_messages => {
+                if let Some(dt) = conv.start_time {
+                    if dt >= start && dt < end {
+                        conversations.push(conv);
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Warning: skipping {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    Ok(conversations)
+}
+
+/// Extract all Skill tool invocations from parsed conversations.
+/// Determines was_productive by checking if the next assistant message after
+/// the Skill invocation contains any tool_use (meaning the skill led to action).
+pub fn extract_skill_invocations(conversations: &[Conversation]) -> Vec<SkillInvocation> {
+    let mut invocations = Vec::new();
+
+    for conv in conversations {
+        for (i, msg) in conv.messages.iter().enumerate() {
+            if msg.role != Role::Assistant {
+                continue;
+            }
+
+            for tool_use in &msg.tool_uses {
+                if tool_use.name != "Skill" {
+                    continue;
+                }
+
+                let skill_name = extract_skill_name(&tool_use.input_summary);
+                if skill_name.is_empty() {
+                    continue;
+                }
+
+                // Check if the next assistant message has tool_uses
+                let was_productive = conv.messages[i + 1..]
+                    .iter()
+                    .find(|m| m.role == Role::Assistant)
+                    .map(|m| !m.tool_uses.is_empty())
+                    .unwrap_or(false);
+
+                // Find the most recent user message before this assistant message
+                let trigger_context = conv.messages[..i]
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == Role::User && !m.content.trim().is_empty())
+                    .map(|m| crate::util::truncate(&m.content, 200));
+
+                invocations.push(SkillInvocation {
+                    skill_name,
+                    conversation_id: conv.id.clone(),
+                    timestamp: msg.timestamp,
+                    was_productive,
+                    trigger_context,
+                });
+            }
+        }
+    }
+
+    invocations
+}
+
+/// Extract skill name from Skill tool input_summary.
+/// Tries JSON parsing first, falls back to string pattern matching.
+fn extract_skill_name(input_summary: &str) -> String {
+    // Try JSON parse first
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(input_summary) {
+        if let Some(name) = val.get("skill").and_then(|v| v.as_str()) {
+            return name.to_string();
+        }
+    }
+
+    // Fallback: find "skill":"..." or "skill": "..." pattern
+    for pattern in &["\"skill\":\"", "\"skill\": \""] {
+        if let Some(start) = input_summary.find(pattern) {
+            let after = &input_summary[start + pattern.len()..];
+            if let Some(end) = after.find('"') {
+                return after[..end].to_string();
+            }
+        }
+    }
+
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +419,181 @@ mod tests {
     fn test_remove_tag_block() {
         let s = "before<system-reminder>hidden</system-reminder>after";
         assert_eq!(remove_tag_block(s, "system-reminder"), "beforeafter");
+    }
+
+    #[test]
+    fn test_extract_skill_invocations() {
+        use crate::types::*;
+        let conversations = vec![Conversation {
+            id: "conv1".to_string(),
+            source_path: PathBuf::from("test.jsonl"),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: "写真を整理して".to_string(),
+                    timestamp: None,
+                    tool_uses: vec![],
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: String::new(),
+                    timestamp: None,
+                    tool_uses: vec![ToolUse {
+                        name: "Skill".to_string(),
+                        input_summary: r#"{"skill":"my-skill","args":""}"#.to_string(),
+                        file_path: None,
+                        command: None,
+                    }],
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: "doing work".to_string(),
+                    timestamp: None,
+                    tool_uses: vec![ToolUse {
+                        name: "Edit".to_string(),
+                        input_summary: "editing file".to_string(),
+                        file_path: Some("test.rs".to_string()),
+                        command: None,
+                    }],
+                },
+            ],
+            start_time: None,
+            end_time: None,
+            cwd: None,
+            git_branch: None,
+        }];
+        let invocations = extract_skill_invocations(&conversations);
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].skill_name, "my-skill");
+        assert!(invocations[0].was_productive);
+        assert_eq!(invocations[0].trigger_context, Some("写真を整理して".to_string()));
+    }
+
+    #[test]
+    fn test_extract_skill_invocations_not_productive() {
+        use crate::types::*;
+        let conversations = vec![Conversation {
+            id: "conv2".to_string(),
+            source_path: PathBuf::from("test.jsonl"),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: "スキルを実行して".to_string(),
+                    timestamp: None,
+                    tool_uses: vec![],
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: String::new(),
+                    timestamp: None,
+                    tool_uses: vec![ToolUse {
+                        name: "Skill".to_string(),
+                        input_summary: r#"{"skill":"lonely-skill"}"#.to_string(),
+                        file_path: None,
+                        command: None,
+                    }],
+                },
+                // No follow-up assistant message with tools
+                Message {
+                    role: Role::User,
+                    content: "thanks".to_string(),
+                    timestamp: None,
+                    tool_uses: vec![],
+                },
+            ],
+            start_time: None,
+            end_time: None,
+            cwd: None,
+            git_branch: None,
+        }];
+        let invocations = extract_skill_invocations(&conversations);
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].skill_name, "lonely-skill");
+        assert!(!invocations[0].was_productive);
+        assert_eq!(invocations[0].trigger_context, Some("スキルを実行して".to_string()));
+    }
+
+    #[test]
+    fn test_trigger_context_truncated() {
+        use crate::types::*;
+        // Test that trigger_context is truncated at 200 chars
+        let long_message = "あ".repeat(300);
+        let conversations = vec![Conversation {
+            id: "conv3".to_string(),
+            source_path: PathBuf::from("test.jsonl"),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: long_message.clone(),
+                    timestamp: None,
+                    tool_uses: vec![],
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: String::new(),
+                    timestamp: None,
+                    tool_uses: vec![ToolUse {
+                        name: "Skill".to_string(),
+                        input_summary: r#"{"skill":"long-trigger"}"#.to_string(),
+                        file_path: None,
+                        command: None,
+                    }],
+                },
+            ],
+            start_time: None,
+            end_time: None,
+            cwd: None,
+            git_branch: None,
+        }];
+        let invocations = extract_skill_invocations(&conversations);
+        assert_eq!(invocations.len(), 1);
+        let ctx = invocations[0].trigger_context.as_ref().unwrap();
+        assert!(ctx.chars().count() <= 203); // 200 + "..."
+    }
+
+    #[test]
+    fn test_parse_window_filters_by_range() {
+        // Create a temp dir with a project subdir and a JSONL conversation
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("test-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        // Create a JSONL file with a timestamp from 2 hours ago
+        let two_hours_ago = Utc::now() - Duration::hours(2);
+        let ts = two_hours_ago.to_rfc3339();
+        let line1 = format!(
+            r#"{{"timestamp":"{}","message":{{"role":"user","content":"hello"}},"cwd":"/tmp"}}"#,
+            ts
+        );
+        let line2 = format!(
+            r#"{{"timestamp":"{}","message":{{"role":"assistant","content":"world"}}}}"#,
+            ts
+        );
+        let line3 = format!(
+            r#"{{"timestamp":"{}","message":{{"role":"user","content":"more"}}}}"#,
+            ts
+        );
+        let line4 = format!(
+            r#"{{"timestamp":"{}","message":{{"role":"assistant","content":"stuff"}}}}"#,
+            ts
+        );
+        let jsonl_content = format!("{}\n{}\n{}\n{}", line1, line2, line3, line4);
+        std::fs::write(project_dir.join("conv-test.jsonl"), &jsonl_content).unwrap();
+
+        // Window that includes 2h ago (0h-4h ago): should find it
+        let now = Utc::now();
+        let result = parse_window(dir.path(), 2, now - Duration::hours(4), now).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "conv-test");
+
+        // Window that doesn't include 2h ago (5h-10h ago): should not find it
+        let result = parse_window(
+            dir.path(),
+            2,
+            now - Duration::hours(10),
+            now - Duration::hours(5),
+        )
+        .unwrap();
+        assert_eq!(result.len(), 0);
     }
 }

@@ -37,7 +37,7 @@ fn generate_from_cluster(cluster: &DomainCluster) -> Vec<SkillDraft> {
     }]
 }
 
-fn build_description(cluster: &DomainCluster) -> String {
+pub fn build_description(cluster: &DomainCluster) -> String {
     let pattern_summaries: Vec<&str> = cluster
         .patterns
         .iter()
@@ -56,7 +56,7 @@ fn build_description(cluster: &DomainCluster) -> String {
     )
 }
 
-fn build_body(cluster: &DomainCluster) -> String {
+pub fn build_body(cluster: &DomainCluster) -> String {
     let mut body = format!("# {}\n\n", cluster.domain);
 
     body.push_str(&format!(
@@ -78,6 +78,91 @@ fn build_body(cluster: &DomainCluster) -> String {
         }
 
         body.push_str(&format!("出現頻度: {}回\n\n", pattern.frequency));
+    }
+
+    body
+}
+
+/// Rebuild description using scored patterns (sorted by score desc).
+/// Filters out patterns with score < 0.05. Falls back to `build_description` if empty.
+pub fn rebuild_description_scored(
+    cluster: &DomainCluster,
+    scored_patterns: &[(usize, f64)],
+    max_patterns: usize,
+) -> String {
+    if scored_patterns.is_empty() {
+        return build_description(cluster);
+    }
+
+    let pattern_summaries: Vec<&str> = scored_patterns
+        .iter()
+        .filter(|(_, score)| *score >= 0.05)
+        .take(max_patterns)
+        .filter_map(|(idx, _)| cluster.patterns.get(*idx).map(|p| p.title.as_str()))
+        .collect();
+
+    if pattern_summaries.is_empty() {
+        return build_description(cluster);
+    }
+
+    let domain_def = domains::normalize(&cluster.domain);
+    let domain_keywords: Vec<&str> = domain_def.keywords.iter().map(|s| s.as_str()).collect();
+
+    format!(
+        "{}。({}) {}と言われた時に使用。",
+        cluster.domain,
+        pattern_summaries.join("、"),
+        domain_keywords.join("、")
+    )
+}
+
+/// Rebuild body using scored patterns (sorted by score desc).
+/// Includes score display alongside frequency. Filters out patterns with score < 0.05.
+/// Falls back to `build_body` if empty.
+pub fn rebuild_body_scored(
+    cluster: &DomainCluster,
+    scored_patterns: &[(usize, f64)],
+) -> String {
+    if scored_patterns.is_empty() {
+        return build_body(cluster);
+    }
+
+    let filtered: Vec<(usize, f64)> = scored_patterns
+        .iter()
+        .filter(|(_, score)| *score >= 0.05)
+        .copied()
+        .collect();
+
+    if filtered.is_empty() {
+        return build_body(cluster);
+    }
+
+    let mut body = format!("# {}\n\n", cluster.domain);
+
+    body.push_str(&format!(
+        "会話数: {} | パターン数: {}\n\n",
+        cluster.conversations.len(),
+        filtered.len()
+    ));
+
+    for (i, (idx, score)) in filtered.iter().enumerate() {
+        if let Some(pattern) = cluster.patterns.get(*idx) {
+            body.push_str(&format!("## {}. {}\n\n", i + 1, pattern.title));
+            body.push_str(&format!("{}\n\n", pattern.description));
+
+            if !pattern.steps.is_empty() {
+                body.push_str("### 手順\n\n");
+                for (j, step) in pattern.steps.iter().enumerate() {
+                    body.push_str(&format!("{}. {}\n", j + 1, step));
+                }
+                body.push_str("\n");
+            }
+
+            body.push_str(&format!(
+                "出現頻度: {}回 | スコア: {:.2}\n\n",
+                pattern.frequency, score
+            ));
+        }
     }
 
     body
@@ -332,6 +417,7 @@ pub fn parse_diff_summary(diff: &str) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::KnowledgePattern;
 
     #[test]
     fn test_extract_body_with_frontmatter() {
@@ -391,5 +477,89 @@ mod tests {
         let (added, removed) = parse_diff_summary(diff_str);
         assert_eq!(added, 2);
         assert_eq!(removed, 1);
+    }
+
+    #[test]
+    fn test_rebuild_description_scored() {
+        let cluster = DomainCluster {
+            domain: "テスト".to_string(),
+            conversations: vec![],
+            patterns: vec![
+                KnowledgePattern {
+                    title: "High score".to_string(),
+                    description: "desc".to_string(),
+                    steps: vec![],
+                    source_ids: vec![],
+                    frequency: 10,
+                },
+                KnowledgePattern {
+                    title: "Low score".to_string(),
+                    description: "desc".to_string(),
+                    steps: vec![],
+                    source_ids: vec![],
+                    frequency: 1,
+                },
+                KnowledgePattern {
+                    title: "Zero score".to_string(),
+                    description: "desc".to_string(),
+                    steps: vec![],
+                    source_ids: vec![],
+                    frequency: 0,
+                },
+            ],
+        };
+        let scored = vec![(0, 0.8), (1, 0.3), (2, 0.01)];
+        let desc = rebuild_description_scored(&cluster, &scored, 5);
+        assert!(desc.contains("High score"));
+        assert!(desc.contains("Low score"));
+        assert!(!desc.contains("Zero score")); // filtered by 0.05 threshold
+    }
+
+    #[test]
+    fn test_rebuild_body_scored() {
+        let cluster = DomainCluster {
+            domain: "テスト".to_string(),
+            conversations: vec![],
+            patterns: vec![
+                KnowledgePattern {
+                    title: "Second".to_string(),
+                    description: "desc2".to_string(),
+                    steps: vec![],
+                    source_ids: vec![],
+                    frequency: 2,
+                },
+                KnowledgePattern {
+                    title: "First".to_string(),
+                    description: "desc1".to_string(),
+                    steps: vec!["step1".to_string()],
+                    source_ids: vec![],
+                    frequency: 5,
+                },
+            ],
+        };
+        // Pattern 1 scored higher, should appear first
+        let scored = vec![(1, 0.9), (0, 0.4)];
+        let body = rebuild_body_scored(&cluster, &scored);
+        let first_pos = body.find("First").unwrap();
+        let second_pos = body.find("Second").unwrap();
+        assert!(first_pos < second_pos);
+        assert!(body.contains("スコア: 0.90"));
+    }
+
+    #[test]
+    fn test_rebuild_description_scored_empty_fallback() {
+        let cluster = DomainCluster {
+            domain: "テスト".to_string(),
+            conversations: vec![],
+            patterns: vec![KnowledgePattern {
+                title: "Pattern".to_string(),
+                description: "d".to_string(),
+                steps: vec![],
+                source_ids: vec![],
+                frequency: 1,
+            }],
+        };
+        let desc = rebuild_description_scored(&cluster, &[], 5);
+        assert!(desc.contains("Pattern")); // fallback to build_description
     }
 }

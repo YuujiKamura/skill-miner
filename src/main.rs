@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use skill_miner::{
-    bundle, classifier, compressor, deployer, extractor, generator, history, manifest, parser,
-    util, DraftStatus, MineConfig, PipelineStats, PruneOptions,
+    bundle, classifier, compressor, deployer, extractor, generator, graph, history, manifest, miner,
+    parser, refiner, scorer, util, DraftStatus, MineConfig, PruneOptions,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -67,12 +67,8 @@ enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Run full pipeline: scan → classify → extract → generate
+    /// Run progressive mining: auto-expand time window until no new conversations
     Mine {
-        #[arg(short, long, default_value = "30")]
-        days: u32,
-        #[arg(short, long, default_value = "4")]
-        min_messages: usize,
         /// Output directory for generated skills
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -82,6 +78,25 @@ enum Command {
         /// Maximum parallel AI calls
         #[arg(long, default_value = "4")]
         parallel: usize,
+        /// Maximum time windows to process (default: unlimited until no new convs)
+        #[arg(long)]
+        max_windows: Option<usize>,
+        /// Maximum days to look back (default: 30)
+        #[arg(long, default_value = "30")]
+        max_days: u32,
+        /// Minimum messages per conversation
+        #[arg(short, long, default_value = "4")]
+        min_messages: usize,
+        /// Minimum significance ratio (0.0-1.0): stop if fewer than this fraction
+        /// of conversations in a window are non-misc with confidence >= 0.5
+        #[arg(long, default_value = "0.3")]
+        min_significance: f64,
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+        /// Auto-sync: commit and push drafts after mining
+        #[arg(long)]
+        sync: bool,
     },
 
     /// List skill drafts with their status
@@ -165,6 +180,9 @@ enum Command {
         /// Only export approved/deployed skills
         #[arg(long)]
         approved_only: bool,
+        /// Include referenced memory/context files in bundle
+        #[arg(long)]
+        include_context: bool,
         /// Drafts directory
         #[arg(short, long)]
         dir: Option<PathBuf>,
@@ -183,6 +201,37 @@ enum Command {
     Verify {
         /// Path to the .skillpack directory
         bundle_path: PathBuf,
+    },
+
+    /// Show dependency graph between skills, memory, and CLAUDE.md files
+    Graph {
+        /// Skills directory to scan
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+
+    /// Consolidate: score skills from invocation logs and rebuild descriptions
+    Consolidate {
+        /// Skill slugs to consolidate (or use --all)
+        names: Vec<String>,
+        /// Consolidate all skills
+        #[arg(long)]
+        all: bool,
+        /// How many days of invocation logs to scan
+        #[arg(long, default_value = "30")]
+        days: u32,
+        /// Minimum score threshold; skills below this get rejected
+        #[arg(long, default_value = "0.1")]
+        min_score: f64,
+        /// Show changes without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Use AI to refine descriptions based on actual trigger phrases
+        #[arg(long)]
+        refine: bool,
+        /// Drafts directory
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
     },
 }
 
@@ -206,12 +255,16 @@ fn main() -> Result<()> {
         Command::Extract { input, output, parallel } => cmd_extract(&config, input, output, parallel),
         Command::Generate { input, output } => cmd_generate(&config, input, output),
         Command::Mine {
-            days,
-            min_messages,
             output,
             dry_run,
             parallel,
-        } => cmd_mine(&config, days, min_messages, output, dry_run, parallel),
+            max_windows,
+            max_days,
+            min_messages,
+            min_significance,
+            dir,
+            sync,
+        } => cmd_mine(&config, output, dry_run, parallel, max_windows, max_days, min_messages, min_significance, dir, sync),
         Command::List { dir } => cmd_list(&config, dir),
         Command::Diff { name, dir } => cmd_diff(&config, name, dir),
         Command::Approve { names, all, dir } => cmd_approve(&config, names, all, dir),
@@ -233,10 +286,21 @@ fn main() -> Result<()> {
             author,
             description,
             approved_only,
+            include_context,
             dir,
-        } => cmd_export(&config, output, name, author, description, approved_only, dir),
+        } => cmd_export(&config, output, name, author, description, approved_only, include_context, dir),
+        Command::Graph { dir } => cmd_graph(&config, dir),
         Command::Import { bundle_path, dir } => cmd_import(&config, bundle_path, dir),
         Command::Verify { bundle_path } => cmd_verify(bundle_path),
+        Command::Consolidate {
+            names,
+            all,
+            days,
+            min_score,
+            dry_run,
+            refine,
+            dir,
+        } => cmd_consolidate(&config, names, all, days, min_score, dry_run, refine, dir),
     }
 }
 
@@ -447,50 +511,35 @@ fn cmd_generate(config: &MineConfig, input: PathBuf, output: Option<PathBuf>) ->
 
 fn cmd_mine(
     config: &MineConfig,
-    days: u32,
-    min_messages: usize,
     output: Option<PathBuf>,
     dry_run: bool,
     parallel: usize,
+    max_windows: Option<usize>,
+    max_days: u32,
+    min_messages: usize,
+    min_significance: f64,
+    dir: Option<PathBuf>,
+    sync: bool,
 ) -> Result<()> {
-    // Step 1: Parse
-    eprintln!("[1/4] Parsing conversations (last {} days)...", days);
-    let conversations = parser::parse_all(&config.projects_dir, min_messages, days)?;
-    eprintln!("  → {} conversations", conversations.len());
+    let drafts_dir = output.unwrap_or_else(|| {
+        dir.unwrap_or_else(|| config.skills_dir.join("drafts"))
+    });
+    std::fs::create_dir_all(&drafts_dir)?;
 
-    // Step 2: Compress & Classify
-    eprintln!("[2/4] Classifying...");
-    let summaries = compressor::compress_all(&conversations);
-    let classified = classifier::classify(&summaries, &config.ai_options)?;
+    let mut mf = load_or_create_manifest(&drafts_dir)?;
 
-    let groups = classifier::group_by_domain(&classified);
-    for (domain, convs) in &groups {
-        eprintln!("  {} → {} conversations", domain, convs.len());
-    }
+    let progressive = miner::ProgressiveConfig {
+        max_days,
+        max_windows,
+        min_messages,
+        parallel,
+        min_significance_ratio: min_significance,
+    };
 
-    // Stats: classify calls = number of batches (50 per batch)
-    let classify_calls = (summaries.len() + 49) / 50; // ceil division
+    let result = miner::mine_progressive(config, &mut mf, &progressive, dry_run)?;
 
-    // Build conv_map from already-parsed conversations to avoid re-parsing in extractor
-    let conv_map: HashMap<String, &skill_miner::Conversation> = conversations
-        .iter()
-        .map(|c| (c.id.clone(), c))
-        .collect();
-
-    // Step 3: Extract (parallel) — uses conv_map to skip redundant parse
-    eprintln!("[3/4] Extracting patterns (parallel)...");
-    let (clusters, extract_calls) =
-        extractor::extract_all_parallel(&groups, Some(&conv_map), &config.ai_options, parallel)?;
-    for cluster in &clusters {
-        eprintln!("  {} → {} patterns", cluster.domain, cluster.patterns.len());
-    }
-
-    // Step 4: Generate
-    eprintln!("[4/4] Generating skills...");
-    let mut drafts = generator::generate_skills(&clusters);
-    generator::check_existing_skills(&mut drafts, &config.skills_dir)?;
-
-    for draft in &drafts {
+    // Display results
+    for draft in &result.drafts {
         let status = if draft.existing_skill.is_some() {
             "UPDATE"
         } else {
@@ -505,43 +554,73 @@ fn cmd_mine(
     }
 
     if !dry_run {
-        let out_dir = output.unwrap_or_else(|| config.skills_dir.join("drafts"));
-        std::fs::create_dir_all(&out_dir)?;
-
-        for draft in &drafts {
+        // Deploy directly to skills dir (no draft stage)
+        std::fs::create_dir_all(&config.skills_dir)?;
+        for draft in &result.drafts {
             let content = generator::format_skill_md(draft);
-            let path = out_dir.join(format!("{}.md", draft.name));
+            let path = config.skills_dir.join(format!("{}.md", draft.name));
             std::fs::write(&path, content)?;
         }
 
-        // Write manifest.toml alongside drafts
-        let mf = manifest::create_from_drafts(&drafts, &clusters, &out_dir);
-        manifest::write_manifest(&out_dir, &mf)?;
+        // Merge into manifest and mark as deployed
+        miner::merge_into_manifest(&mut mf, &result.drafts, &result.clusters);
+        let now = chrono::Utc::now();
+        for draft in &result.drafts {
+            if let Some(entry) = mf.entries.iter_mut().find(|e| e.slug == draft.name) {
+                entry.status = skill_miner::DraftStatus::Deployed;
+                entry.deployed_at = Some(now);
+            }
+        }
+        manifest::write_manifest(&drafts_dir, &mf)?;
 
-        eprintln!("\nWrote {} drafts + manifest.toml to {}", drafts.len(), out_dir.display());
+        eprintln!(
+            "\nDeployed {} skills to {}",
+            result.drafts.len(),
+            config.skills_dir.display()
+        );
+
+        // Auto-sync if requested
+        if sync {
+            let new_count = result.drafts.iter().filter(|d| d.existing_skill.is_none()).count();
+            let updated_count = result.drafts.iter().filter(|d| d.existing_skill.is_some()).count();
+            let sync_config = skill_miner::sync::SyncConfig {
+                drafts_dir: config.skills_dir.clone(),
+                remote: "origin".to_string(),
+                branch: "main".to_string(),
+            };
+            let sync_result = skill_miner::sync::sync_drafts(&sync_config, new_count, updated_count);
+            if sync_result.committed {
+                eprintln!(
+                    "[sync] committed {} files: {}",
+                    sync_result.files_changed, sync_result.commit_message
+                );
+                if sync_result.pushed {
+                    eprintln!("[sync] pushed successfully");
+                }
+            }
+        }
     } else {
-        eprintln!("\nDry run: {} drafts would be generated", drafts.len());
+        eprintln!("\nDry run: {} drafts would be generated", result.drafts.len());
     }
 
     // Stats summary
-    let stats = PipelineStats {
-        classify_calls,
-        extract_calls,
-        total_calls: classify_calls + extract_calls,
-    };
     eprintln!();
-    eprintln!("=== Stats ===");
+    eprintln!("=== Progressive Mine Results ===");
+    eprintln!("Windows processed: {}", result.windows_processed);
+    eprintln!("New conversations: {}", result.new_conversations);
+    if result.skipped_low_value > 0 {
+        eprintln!("Low-value windows: {}", result.skipped_low_value);
+    }
     eprintln!(
-        "Classify: {} AI calls ({} conversations / 50 per batch)",
-        stats.classify_calls,
-        summaries.len()
+        "Classify: {} AI calls",
+        result.stats.classify_calls
     );
     eprintln!(
         "Extract: {} AI calls ({} domains)",
-        stats.extract_calls,
-        stats.extract_calls
+        result.stats.extract_calls,
+        result.stats.extract_calls
     );
-    eprintln!("Total: {} AI calls", stats.total_calls);
+    eprintln!("Total: {} AI calls", result.stats.total_calls);
 
     Ok(())
 }
@@ -588,12 +667,22 @@ fn cmd_list(config: &MineConfig, dir: Option<PathBuf>) -> Result<()> {
         } else {
             String::new()
         };
+        let score_info = match e.score {
+            Some(s) => format!("  score: {:.2}", s),
+            None => String::new(),
+        };
+        let fire_info = match e.fire_count {
+            Some(f) => format!("  fires: {}", f),
+            None => String::new(),
+        };
         println!(
-            "[{:9}] {:<20} {:<12} {} patterns{}",
+            "[{:9}] {:<20} {:<12} {} patterns{}{}{}",
             e.status.to_string(),
             e.slug,
             e.domain,
             e.pattern_count,
+            score_info,
+            fire_info,
             deployed_info
         );
     }
@@ -729,6 +818,102 @@ fn cmd_prune(
     Ok(())
 }
 
+fn cmd_graph(config: &MineConfig, dir: Option<PathBuf>) -> Result<()> {
+    let skills_dir = dir.unwrap_or_else(|| config.skills_dir.clone());
+    let home = util::home_dir();
+
+    // Collect memory dirs from all projects
+    let mut memory_dirs: Vec<PathBuf> = Vec::new();
+    let projects_dir = &config.projects_dir;
+    if projects_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(projects_dir) {
+            for entry in entries.flatten() {
+                let mem_dir = entry.path().join("memory");
+                if mem_dir.is_dir() {
+                    memory_dirs.push(mem_dir);
+                }
+            }
+        }
+    }
+
+    // Collect CLAUDE.md paths
+    let claude_md_paths: Vec<PathBuf> = [
+        home.join("CLAUDE.md"),
+        home.join(".claude").join("CLAUDE.md"),
+    ]
+    .into_iter()
+    .filter(|p| p.exists())
+    .collect();
+
+    let dep_graph = graph::build_graph(&skills_dir, &memory_dirs, &claude_md_paths);
+
+    println!("=== Dependency Graph ===\n");
+
+    for node in &dep_graph.nodes {
+        println!("{}", node.path);
+        for dep in &node.outgoing {
+            let broken = dep_graph
+                .broken_links
+                .iter()
+                .any(|b| b.from == dep.from && b.to == dep.to);
+            let suffix = if broken { " [BROKEN]" } else { "" };
+            println!(
+                "  \u{2192} [{:?}] {} (line {}){}",
+                dep.dep_type, dep.to, dep.line, suffix
+            );
+        }
+        for dep in &node.incoming {
+            println!(
+                "  \u{2190} [{:?}] from {} (line {})",
+                dep.dep_type, dep.from, dep.line
+            );
+        }
+        println!();
+    }
+
+    // Summary
+    let total_refs: usize = dep_graph.nodes.iter().map(|n| n.outgoing.len()).sum();
+    println!("=== Summary ===");
+    println!("Files scanned: {}", dep_graph.nodes.len());
+    println!("References found: {}", total_refs);
+    println!(
+        "Broken links: {}{}",
+        dep_graph.broken_links.len(),
+        if dep_graph.broken_links.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({})",
+                dep_graph
+                    .broken_links
+                    .iter()
+                    .map(|b| b.to.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    );
+    println!(
+        "Orphan files: {}{}",
+        dep_graph.orphans.len(),
+        if dep_graph.orphans.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({})",
+                dep_graph
+                    .orphans
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    );
+
+    Ok(())
+}
+
 fn cmd_export(
     config: &MineConfig,
     output: PathBuf,
@@ -736,6 +921,7 @@ fn cmd_export(
     author: Option<String>,
     description: String,
     approved_only: bool,
+    include_context: bool,
     dir: Option<PathBuf>,
 ) -> Result<()> {
     let drafts_dir = resolve_drafts_dir(config, dir);
@@ -746,6 +932,7 @@ fn cmd_export(
         name,
         author,
         description,
+        include_context,
     };
 
     let bun = bundle::export_bundle(&drafts_dir, &output, &mf, &opts)?;
@@ -757,6 +944,15 @@ fn cmd_export(
         "Source: {} conversations, {} domains, {} patterns",
         bun.source.conversations, bun.source.domains, bun.source.patterns
     );
+    if include_context {
+        let ctx_dir = output.join("context").join("memory");
+        if ctx_dir.exists() {
+            let count = std::fs::read_dir(&ctx_dir)
+                .map(|rd| rd.count())
+                .unwrap_or(0);
+            println!("Context files: {}", count);
+        }
+    }
     println!("Output: {}", output.display());
 
     Ok(())
@@ -766,7 +962,7 @@ fn cmd_import(config: &MineConfig, bundle_path: PathBuf, dir: Option<PathBuf>) -
     let drafts_dir = resolve_drafts_dir(config, dir);
     let mut mf = load_or_create_manifest(&drafts_dir)?;
 
-    let result = bundle::import_bundle(&bundle_path, &drafts_dir, &mut mf)?;
+    let mut result = bundle::import_bundle(&bundle_path, &drafts_dir, &mut mf)?;
 
     if !result.imported.is_empty() {
         println!("Imported:");
@@ -787,6 +983,59 @@ fn cmd_import(config: &MineConfig, bundle_path: PathBuf, dir: Option<PathBuf>) -
         }
     }
 
+    // Restore context files if present
+    let ctx_dir = bundle_path.join("context").join("memory");
+    if ctx_dir.exists() {
+        // Find current project's memory dir by matching CWD against existing project dirs
+        let projects_dir = config.projects_dir.clone();
+        let memory_dir = if projects_dir.exists() {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let cwd_str = cwd.to_string_lossy().replace(['/', '\\', ':'], "-");
+
+            // Find the best matching existing project directory
+            let mut best_match: Option<PathBuf> = None;
+            let mut best_len = 0;
+            if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+                for entry in entries.flatten() {
+                    let dir_name = entry.file_name().to_string_lossy().to_string();
+                    // Check if CWD key starts with or contains this project key
+                    if cwd_str.starts_with(&dir_name) && dir_name.len() > best_len {
+                        best_len = dir_name.len();
+                        best_match = Some(entry.path());
+                    }
+                }
+            }
+
+            let project_dir = best_match.unwrap_or_else(|| {
+                // No match found; use the CWD-derived key
+                projects_dir.join(&cwd_str)
+            });
+            let mem = project_dir.join("memory");
+            std::fs::create_dir_all(&mem)?;
+            mem
+        } else {
+            // Fallback: create memory dir next to drafts
+            let mem = drafts_dir.join("imported-context");
+            std::fs::create_dir_all(&mem)?;
+            mem
+        };
+
+        bundle::import_context(&bundle_path, &memory_dir, &mut result)?;
+
+        if !result.context_imported.is_empty() {
+            println!("Context imported:");
+            for f in &result.context_imported {
+                println!("  + {}", f);
+            }
+        }
+        if !result.context_conflicted.is_empty() {
+            println!("Context conflicted (saved as .imported.md):");
+            for f in &result.context_conflicted {
+                println!("  ! {}", f);
+            }
+        }
+    }
+
     manifest::write_manifest(&drafts_dir, &mf)?;
 
     eprintln!(
@@ -795,8 +1044,365 @@ fn cmd_import(config: &MineConfig, bundle_path: PathBuf, dir: Option<PathBuf>) -
         result.skipped.len(),
         result.conflicted.len()
     );
+    if !result.context_imported.is_empty() || !result.context_conflicted.is_empty() {
+        eprintln!(
+            "Context: {} imported, {} conflicts",
+            result.context_imported.len(),
+            result.context_conflicted.len()
+        );
+    }
 
     Ok(())
+}
+
+fn cmd_consolidate(
+    config: &MineConfig,
+    names: Vec<String>,
+    all: bool,
+    days: u32,
+    min_score: f64,
+    dry_run: bool,
+    refine: bool,
+    dir: Option<PathBuf>,
+) -> Result<()> {
+    let drafts_dir = resolve_drafts_dir(config, dir);
+    let mut mf = load_or_create_manifest(&drafts_dir)?;
+
+    if mf.entries.is_empty() {
+        eprintln!("No drafts found in {}", drafts_dir.display());
+        return Ok(());
+    }
+
+    // Step 1: Parse chat history and extract skill invocations
+    eprintln!("[1/3] Scanning chat history (last {} days) for skill invocations...", days);
+    let conversations = parser::parse_all(&config.projects_dir, 1, days)?;
+    let invocations = parser::extract_skill_invocations(&conversations);
+    eprintln!("  → {} conversations, {} skill invocations", conversations.len(), invocations.len());
+
+    // Step 2: Score skills
+    eprintln!("[2/3] Scoring skills...");
+
+    // Build minimal clusters from manifest entries for scoring
+    let clusters: Vec<skill_miner::DomainCluster> = mf
+        .entries
+        .iter()
+        .map(|e| {
+            let patterns: Vec<skill_miner::KnowledgePattern> = (0..e.pattern_count)
+                .map(|_| skill_miner::KnowledgePattern {
+                    title: String::new(),
+                    description: String::new(),
+                    steps: vec![],
+                    source_ids: vec![],
+                    frequency: 1,
+                })
+                .collect();
+            skill_miner::DomainCluster {
+                domain: e.domain.clone(),
+                conversations: vec![],
+                patterns,
+            }
+        })
+        .collect();
+
+    let scores = scorer::score_skills(&invocations, &mf, &clusters);
+
+    // Build score lookup
+    let score_map: HashMap<String, f64> = scores.iter().cloned().collect();
+
+    // Build fire count and productive count lookups
+    let mut fire_map: HashMap<&str, usize> = HashMap::new();
+    let mut productive_map: HashMap<&str, usize> = HashMap::new();
+    for inv in &invocations {
+        *fire_map.entry(inv.skill_name.as_str()).or_insert(0) += 1;
+        if inv.was_productive {
+            *productive_map.entry(inv.skill_name.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    // Build trigger_context lookup: slug -> Vec<String>
+    let mut trigger_map: HashMap<&str, Vec<String>> = HashMap::new();
+    for inv in &invocations {
+        if let Some(ref ctx) = inv.trigger_context {
+            trigger_map
+                .entry(inv.skill_name.as_str())
+                .or_default()
+                .push(ctx.clone());
+        }
+    }
+
+    // Filter to requested slugs
+    let target_slugs: Vec<String> = if all {
+        mf.entries.iter().map(|e| e.slug.clone()).collect()
+    } else if !names.is_empty() {
+        names
+    } else {
+        eprintln!("Specify skill names or use --all");
+        return Ok(());
+    };
+
+    // Step 3: Display and apply
+    eprintln!("[3/3] Results:\n");
+    println!("{:<20} {:>6} {:>5}  {}", "SKILL", "SCORE", "FIRES", "STATUS");
+    println!("{}", "-".repeat(50));
+
+    let mut rejected_count = 0;
+    let mut updated_count = 0;
+
+    for slug in &target_slugs {
+        let score = score_map.get(slug).copied().unwrap_or(0.0);
+        let fires = fire_map.get(slug.as_str()).copied().unwrap_or(0);
+
+        let status_change = if score < min_score {
+            "→ rejected"
+        } else {
+            ""
+        };
+
+        println!(
+            "{:<20} {:>6.3} {:>5}  {}",
+            slug, score, fires, status_change
+        );
+
+        if !dry_run {
+            if let Some(entry) = manifest::find_entry_mut(&mut mf, slug) {
+                entry.score = Some(score);
+                entry.fire_count = Some(fires);
+                updated_count += 1;
+
+                if score < min_score && entry.status != DraftStatus::Rejected {
+                    match entry.status {
+                        DraftStatus::Draft => {
+                            entry.status = DraftStatus::Rejected;
+                            rejected_count += 1;
+                        }
+                        DraftStatus::Approved | DraftStatus::Deployed => {
+                            entry.status = DraftStatus::Rejected;
+                            rejected_count += 1;
+                        }
+                        DraftStatus::Rejected => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // === 発火診断 ===
+    println!();
+    println!("=== 発火診断 ===");
+    println!();
+
+    // UNDER-TRIGGER: fire_count==0 && deployed > 14 days
+    let under_triggered: Vec<_> = target_slugs
+        .iter()
+        .filter_map(|slug| {
+            let entry = manifest::find_entry(&mf, slug)?;
+            let fires = fire_map.get(slug.as_str()).copied().unwrap_or(0);
+            if fires > 0 {
+                return None;
+            }
+            let deployed_at = entry.deployed_at?;
+            let days_since = (chrono::Utc::now() - deployed_at).num_days();
+            if days_since > 14 {
+                Some((slug.clone(), deployed_at, days_since))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !under_triggered.is_empty() {
+        println!("[UNDER-TRIGGER] 以下のスキルはデプロイ後14日以上発火ゼロ:");
+        for (slug, deployed_at, _days) in &under_triggered {
+            println!("  {} (deployed {}, 0 fires)", slug, deployed_at.format("%Y-%m-%d"));
+        }
+        println!("  → descriptionのトリガーフレーズ不足の可能性。--refine で改善を試行");
+        println!();
+    }
+
+    // LOW-PRODUCTIVE: productive_rate < 0.5 && fire_count >= 3
+    let low_productive: Vec<_> = target_slugs
+        .iter()
+        .filter_map(|slug| {
+            let fires = fire_map.get(slug.as_str()).copied().unwrap_or(0);
+            if fires < 3 {
+                return None;
+            }
+            let productive = productive_map.get(slug.as_str()).copied().unwrap_or(0);
+            let rate = productive as f64 / fires as f64;
+            if rate < 0.5 {
+                Some((slug.clone(), fires, productive, rate))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !low_productive.is_empty() {
+        println!("[LOW-PRODUCTIVE] 以下のスキルは発火するが有効率が低い (< 50%):");
+        for (slug, fires, productive, rate) in &low_productive {
+            println!(
+                "  {}: {} fires, {} productive ({:.0}%)",
+                slug,
+                fires,
+                productive,
+                rate * 100.0
+            );
+        }
+        println!("  → Over-triggeringの可能性。descriptionのスコープを狭めるべき");
+        println!();
+    }
+
+    if under_triggered.is_empty() && low_productive.is_empty() {
+        println!("問題なし。");
+        println!();
+    }
+
+    // === --refine: description研磨 ===
+    if refine {
+        eprintln!("=== Description研磨 ===\n");
+
+        let refine_targets: Vec<_> = target_slugs
+            .iter()
+            .filter(|slug| {
+                let fires = fire_map.get(slug.as_str()).copied().unwrap_or(0);
+                fires > 0 && trigger_map.contains_key(slug.as_str())
+            })
+            .collect();
+
+        if refine_targets.is_empty() {
+            eprintln!("研磨対象なし（trigger_contextを持つスキルがありません）");
+        } else {
+            for slug in &refine_targets {
+                let contexts = match trigger_map.get(slug.as_str()) {
+                    Some(c) => c.clone(),
+                    None => continue,
+                };
+
+                // Read current description from MD file
+                let md_path = drafts_dir.join(format!("{}.md", slug));
+                if !md_path.exists() {
+                    // Try skills_dir
+                    let skill_path = config.skills_dir.join(format!("{}.md", slug));
+                    if !skill_path.exists() {
+                        eprintln!("  {} — MDファイルが見つかりません、スキップ", slug);
+                        continue;
+                    }
+                }
+
+                let md_path = if drafts_dir.join(format!("{}.md", slug)).exists() {
+                    drafts_dir.join(format!("{}.md", slug))
+                } else {
+                    config.skills_dir.join(format!("{}.md", slug))
+                };
+
+                let content = std::fs::read_to_string(&md_path)?;
+                let current_desc = extract_description_from_md(&content).unwrap_or_default();
+
+                if current_desc.is_empty() {
+                    eprintln!("  {} — descriptionが空、スキップ", slug);
+                    continue;
+                }
+
+                eprintln!("  {} — 研磨中... ({} trigger phrases)", slug, contexts.len());
+
+                match refiner::refine_description(&current_desc, &contexts, slug, &config.ai_options)
+                {
+                    Ok(new_desc) => {
+                        if new_desc == current_desc {
+                            println!("  {} — 変更なし", slug);
+                        } else if dry_run {
+                            println!("  {} — description diff:", slug);
+                            println!("    OLD: {}", current_desc);
+                            println!("    NEW: {}", new_desc);
+                        } else {
+                            // Replace description in MD file
+                            let new_content =
+                                replace_description_in_md(&content, &new_desc);
+                            std::fs::write(&md_path, new_content)?;
+                            println!("  {} — description更新完了", slug);
+                            println!("    OLD: {}", current_desc);
+                            println!("    NEW: {}", new_desc);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  {} — 研磨失敗: {}", slug, e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Summary
+    if dry_run {
+        eprintln!("\nDry run: no changes written");
+        let below = target_slugs
+            .iter()
+            .filter(|s| score_map.get(s.as_str()).copied().unwrap_or(0.0) < min_score)
+            .count();
+        if below > 0 {
+            eprintln!("{} skills would be rejected (score < {:.2})", below, min_score);
+        }
+    } else {
+        manifest::write_manifest(&drafts_dir, &mf)?;
+        eprintln!(
+            "\nUpdated {} skills, rejected {} (score < {:.2})",
+            updated_count, rejected_count, min_score
+        );
+        eprintln!("Manifest written to {}", drafts_dir.join("manifest.toml").display());
+    }
+
+    Ok(())
+}
+
+/// Extract description from YAML frontmatter in a skill MD file.
+fn extract_description_from_md(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.first()?.trim() != "---" {
+        return None;
+    }
+    for line in &lines[1..] {
+        if line.trim() == "---" {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("description:") {
+            let desc = rest.trim();
+            // Remove surrounding quotes if present
+            let desc = desc.strip_prefix('"').unwrap_or(desc);
+            let desc = desc.strip_suffix('"').unwrap_or(desc);
+            return Some(desc.to_string());
+        }
+    }
+    None
+}
+
+/// Replace description in YAML frontmatter of a skill MD file.
+fn replace_description_in_md(content: &str, new_desc: &str) -> String {
+    let mut result = Vec::new();
+    let mut in_frontmatter = false;
+    let mut replaced = false;
+
+    for line in content.lines() {
+        if line.trim() == "---" {
+            if !in_frontmatter {
+                in_frontmatter = true;
+            } else {
+                in_frontmatter = false;
+            }
+            result.push(line.to_string());
+            continue;
+        }
+
+        if in_frontmatter && !replaced && line.starts_with("description:") {
+            // Escape quotes in description
+            let escaped = new_desc.replace('"', "\\\"");
+            result.push(format!("description: \"{}\"", escaped));
+            replaced = true;
+        } else {
+            result.push(line.to_string());
+        }
+    }
+
+    result.join("\n")
 }
 
 fn cmd_verify(bundle_path: PathBuf) -> Result<()> {

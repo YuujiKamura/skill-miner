@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::de::DeserializeOwned;
+use std::path::{Path, PathBuf};
 
 /// Truncate a string at a safe char boundary, appending "..." if truncated.
 pub fn truncate(s: &str, max_chars: usize) -> String {
@@ -44,6 +45,19 @@ pub fn parse_json_response<T: DeserializeOwned>(response: &str) -> Result<Vec<T>
         let preview: String = response.chars().take(200).collect();
         anyhow::anyhow!("Failed to parse JSON array: {}\nResponse: {}", e, preview)
     })
+}
+
+/// Normalize a path to forward slashes for consistent display.
+pub fn normalize_path(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+/// Get the user's home directory (cross-platform).
+pub fn home_dir() -> PathBuf {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 #[cfg(test)]
