@@ -7,6 +7,7 @@ use crate::manifest;
 use crate::types::{
     BundleSkill, BundleStats, DraftEntry, DraftStatus, ImportResult, Manifest, SkillBundle,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Options for exporting a bundle.
@@ -24,6 +25,33 @@ pub struct ExportOptions {
     pub include_context: bool,
     /// Export sanitized content suitable for public sharing
     pub public_sanitized: bool,
+}
+
+/// Options for validating a bundle.
+#[derive(Debug, Clone, Default)]
+pub struct ValidateOptions {
+    /// Apply additional checks for public distribution safety.
+    pub public_profile: bool,
+}
+
+/// Result of validating a bundle.
+#[derive(Debug, Clone, Default)]
+pub struct ValidateReport {
+    /// Number of skills checked.
+    pub checked_skills: usize,
+    /// Validation errors (should block release).
+    pub errors: Vec<String>,
+    /// Validation warnings (needs review).
+    pub warnings: Vec<String>,
+}
+
+/// Result of auto-fixing a bundle.
+#[derive(Debug, Clone, Default)]
+pub struct FixReport {
+    /// Number of skill files updated.
+    pub updated_files: usize,
+    /// Notes for applied fixes.
+    pub notes: Vec<String>,
 }
 
 /// Export skills as a portable .skillpack directory.
@@ -62,7 +90,7 @@ pub fn export_bundle(
 
         let original_content = std::fs::read_to_string(&source)?;
         let content = if opts.public_sanitized {
-            sanitize_skill_content(&original_content)
+            sanitize_public_content(&original_content)
         } else {
             original_content
         };
@@ -107,7 +135,7 @@ pub fn export_bundle(
 
     let bundle = SkillBundle {
         name: if opts.public_sanitized {
-            sanitize_bundle_name(&opts.name)
+            sanitize_public_bundle_name(&opts.name)
         } else {
             opts.name.clone()
         },
@@ -139,21 +167,27 @@ pub fn export_bundle(
     Ok(bundle)
 }
 
-fn sanitize_bundle_name(name: &str) -> String {
+fn sanitize_public_bundle_name(name: &str) -> String {
+    if name.to_lowercase().contains("yuuji") {
+        return "shared-skillset-public".to_string();
+    }
     if name.ends_with("-public") {
         return name.to_string();
     }
     format!("{}-public", name)
 }
 
-fn sanitize_skill_content(content: &str) -> String {
+fn sanitize_public_content(content: &str) -> String {
     let mut out = Vec::new();
     for line in content.lines() {
         let mut s = line.to_string();
 
         // Scrub concrete paths and user-specific environment hints.
         s = s.replace("H:/マイドライブ/", "<DRIVE_PATH>/");
+        s = s.replace("H:\\マイドライブ\\", "<DRIVE_PATH>\\");
         s = s.replace("C:/Users/", "<USER_HOME>/");
+        s = s.replace("C:\\Users\\", "<USER_HOME>\\");
+        s = s.replace("~/.claude/", "<CLAUDE_HOME>/");
         s = s.replace("~/.claude/history.jsonl", "<CLAUDE_HISTORY>");
         s = s.replace("~/.claude/skills/", "<CLAUDE_SKILLS_DIR>/");
         s = s.replace("CLAUDECODE= claude -p", "claude -p");
@@ -303,6 +337,314 @@ pub fn verify_bundle(bundle_path: &Path) -> Result<Vec<String>, SkillMinerError>
     }
 
     Ok(errors)
+}
+
+/// Validate bundle content quality and optional public-safety profile.
+pub fn validate_bundle(
+    bundle_path: &Path,
+    opts: &ValidateOptions,
+) -> Result<ValidateReport, SkillMinerError> {
+    let bundle = read_bundle(bundle_path)?;
+    let mut report = ValidateReport {
+        checked_skills: bundle.skills.len(),
+        errors: Vec::new(),
+        warnings: Vec::new(),
+    };
+
+    // Integrity errors are always blocking.
+    let integrity_errors = verify_bundle(bundle_path)?;
+    for err in integrity_errors {
+        report.errors.push(format!("integrity: {}", err));
+    }
+
+    if bundle.source.domains != bundle.skills.len() {
+        report.warnings.push(format!(
+            "manifest source.domains={} but skills={}",
+            bundle.source.domains,
+            bundle.skills.len()
+        ));
+    }
+
+    if opts.public_profile {
+        if bundle.author.is_some() {
+            report
+                .warnings
+                .push("public profile: author should be omitted".to_string());
+        }
+        if bundle.name.to_lowercase().contains("yuuji") {
+            report
+                .warnings
+                .push("public profile: bundle name may include personal identifier".to_string());
+        }
+    }
+
+    let skills_dir = bundle_path.join("skills");
+    for skill in &bundle.skills {
+        let path = skills_dir.join(format!("{}.md", skill.slug));
+        if !path.exists() {
+            continue; // already reported by integrity check
+        }
+
+        let content = std::fs::read_to_string(&path)?;
+        let frontmatter = parse_frontmatter(&content);
+        if frontmatter.is_none() {
+            report
+                .errors
+                .push(format!("{}: missing YAML frontmatter", skill.slug));
+            continue;
+        }
+        let frontmatter = frontmatter.unwrap_or_default();
+
+        let name = frontmatter.get("name").cloned();
+        match name {
+            Some(n) if n == skill.slug => {}
+            Some(n) => report.warnings.push(format!(
+                "{}: frontmatter name '{}' differs from slug '{}'",
+                skill.slug, n, skill.slug
+            )),
+            None => report
+                .errors
+                .push(format!("{}: missing frontmatter 'name'", skill.slug)),
+        }
+
+        if !frontmatter.contains_key("description") {
+            report
+                .warnings
+                .push(format!("{}: missing frontmatter 'description'", skill.slug));
+        }
+
+        if !content.lines().any(|l| l.starts_with("## ")) {
+            report
+                .warnings
+                .push(format!("{}: no section heading ('## ...') found", skill.slug));
+        }
+
+        if opts.public_profile {
+            for marker in [
+                "H:/マイドライブ/",
+                "C:/Users/",
+                "~/.claude/",
+                "CLAUDECODE=",
+                "住所",
+                "現場名",
+            ] {
+                if content.contains(marker) {
+                    report.warnings.push(format!(
+                        "{}: public profile sensitive marker found: {}",
+                        skill.slug, marker
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Auto-fix common bundle issues and rewrite manifest hashes.
+pub fn fix_bundle(bundle_path: &Path, opts: &ValidateOptions) -> Result<FixReport, SkillMinerError> {
+    let mut bundle = read_bundle(bundle_path)?;
+    let skills_dir = bundle_path.join("skills");
+    let mut report = FixReport::default();
+
+    if opts.public_profile {
+        if bundle.author.is_some() {
+            bundle.author = None;
+            report
+                .notes
+                .push("manifest: removed author for public profile".to_string());
+        }
+        let sanitized_name = sanitize_public_bundle_name(&bundle.name);
+        if sanitized_name != bundle.name {
+            bundle.name = sanitized_name;
+            report
+                .notes
+                .push("manifest: sanitized bundle name for public profile".to_string());
+        }
+    }
+
+    for skill in &mut bundle.skills {
+        let path = skills_dir.join(format!("{}.md", skill.slug));
+        if !path.exists() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)?;
+        let (mut fixed, changed, notes) = fix_skill_content(&content, &skill.slug);
+        let mut mutated = changed;
+        if opts.public_profile {
+            let sanitized = sanitize_public_content(&fixed);
+            if sanitized != fixed {
+                fixed = sanitized;
+                mutated = true;
+                report
+                    .notes
+                    .push(format!("{}: sanitized public-sensitive markers", skill.slug));
+            }
+        }
+
+        if mutated {
+            std::fs::write(&path, &fixed)?;
+            report.updated_files += 1;
+            for n in notes {
+                report.notes.push(format!("{}: {}", skill.slug, n));
+            }
+        }
+        skill.content_hash = manifest::compute_hash(&fixed);
+    }
+
+    // Keep source stats consistent after file changes.
+    bundle.source.domains = bundle.skills.len();
+    bundle.source.patterns = bundle.skills.iter().map(|s| s.pattern_count).sum();
+
+    let toml =
+        toml::to_string_pretty(&bundle).map_err(|e| SkillMinerError::Config(e.to_string()))?;
+    std::fs::write(bundle_path.join("manifest.toml"), toml)?;
+
+    Ok(report)
+}
+
+fn parse_frontmatter(content: &str) -> Option<HashMap<String, String>> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    let mut map = HashMap::new();
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            return Some(map);
+        }
+        if let Some((k, v)) = trimmed.split_once(':') {
+            let key = k.trim().to_string();
+            let value = v.trim().trim_matches('"').trim_matches('\'').to_string();
+            if !key.is_empty() && !value.is_empty() {
+                map.insert(key, value);
+            }
+        }
+    }
+
+    None
+}
+
+fn fix_skill_content(content: &str, slug: &str) -> (String, bool, Vec<String>) {
+    let mut notes = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let has_trailing_newline = content.ends_with('\n');
+
+    if lines.is_empty() || lines[0].trim() != "---" {
+        let mut out = String::new();
+        out.push_str("---\n");
+        out.push_str(&format!("name: {}\n", slug));
+        out.push_str("description: Use when this skill's workflow applies\n");
+        out.push_str("---\n\n");
+        out.push_str(content);
+        if !has_trailing_newline {
+            out.push('\n');
+        }
+        notes.push("added missing YAML frontmatter".to_string());
+        return (out, true, notes);
+    }
+
+    let mut close_idx = None;
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        if line.trim() == "---" {
+            close_idx = Some(i);
+            break;
+        }
+    }
+    let Some(end) = close_idx else {
+        let mut out = String::new();
+        out.push_str("---\n");
+        out.push_str(&format!("name: {}\n", slug));
+        out.push_str("description: Use when this skill's workflow applies\n");
+        out.push_str("---\n\n");
+        out.push_str(content);
+        if !has_trailing_newline {
+            out.push('\n');
+        }
+        notes.push("repaired unterminated YAML frontmatter".to_string());
+        return (out, true, notes);
+    };
+
+    let mut front: Vec<String> = lines[1..end].iter().map(|s| (*s).to_string()).collect();
+    let body = if end + 1 < lines.len() {
+        lines[end + 1..].join("\n")
+    } else {
+        String::new()
+    };
+
+    let mut changed = false;
+    if upsert_frontmatter_key(&mut front, "name", slug, true) {
+        changed = true;
+        notes.push("inserted or normalized frontmatter name".to_string());
+    }
+    if upsert_frontmatter_key(
+        &mut front,
+        "description",
+        "Use when this skill's workflow applies",
+        false,
+    ) {
+        changed = true;
+        notes.push("added missing frontmatter description".to_string());
+    }
+
+    if !changed {
+        return (content.to_string(), false, notes);
+    }
+
+    let mut out = String::new();
+    out.push_str("---\n");
+    out.push_str(&front.join("\n"));
+    out.push_str("\n---\n");
+    if !body.is_empty() {
+        out.push_str(&body);
+        out.push('\n');
+    }
+    (out, true, notes)
+}
+
+fn upsert_frontmatter_key(
+    lines: &mut Vec<String>,
+    key: &str,
+    value: &str,
+    normalize_existing: bool,
+) -> bool {
+    let prefix = format!("{}:", key);
+    let mut found: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            if l.trim_start().starts_with(&prefix) {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if found.is_empty() {
+        lines.insert(0, format!("{}: {}", key, value));
+        return true;
+    }
+
+    // Keep only first occurrence.
+    let first = found.remove(0);
+    let mut changed = false;
+    while let Some(idx) = found.pop() {
+        lines.remove(idx);
+        changed = true;
+    }
+
+    if normalize_existing {
+        let desired = format!("{}: {}", key, value);
+        if lines[first].trim() != desired {
+            lines[first] = desired;
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 /// Copy referenced memory/context files into the bundle's context/ directory.
@@ -812,6 +1154,340 @@ content_hash = "{}"
         // Verify should also work
         let errors = verify_bundle(bundle_dir.path()).unwrap();
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn validate_bundle_detects_structure_issues() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let skills_dir = bundle_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let bad_content = "# Missing frontmatter\n\nBody only\n";
+        std::fs::write(skills_dir.join("bad.md"), bad_content).unwrap();
+
+        let bundle = SkillBundle {
+            name: "validate-test".to_string(),
+            version: "1.0".to_string(),
+            author: Some("tester".to_string()),
+            description: "test".to_string(),
+            created_at: Utc::now(),
+            source: BundleStats {
+                conversations: 1,
+                domains: 1,
+                patterns: 1,
+            },
+            skills: vec![BundleSkill {
+                slug: "bad".to_string(),
+                domain: "Test".to_string(),
+                pattern_count: 1,
+                content_hash: manifest::compute_hash(bad_content),
+                score: None,
+                fire_count: None,
+                deployed_at: None,
+                dependencies: vec![],
+            }],
+        };
+
+        let manifest_toml = toml::to_string_pretty(&bundle).unwrap();
+        std::fs::write(bundle_dir.path().join("manifest.toml"), manifest_toml).unwrap();
+
+        let report = validate_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: false,
+            },
+        )
+        .unwrap();
+
+        assert!(report.errors.iter().any(|e| e.contains("frontmatter")));
+    }
+
+    #[test]
+    fn validate_bundle_public_flags_sensitive_content() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let skills_dir = bundle_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let content = r#"---
+name: sensitive
+description: test
+---
+
+Use H:/マイドライブ/ path and ~/.claude/history.jsonl
+"#;
+        std::fs::write(skills_dir.join("sensitive.md"), content).unwrap();
+
+        let bundle = SkillBundle {
+            name: "validate-test".to_string(),
+            version: "1.0".to_string(),
+            author: Some("tester".to_string()),
+            description: "test".to_string(),
+            created_at: Utc::now(),
+            source: BundleStats {
+                conversations: 1,
+                domains: 1,
+                patterns: 1,
+            },
+            skills: vec![BundleSkill {
+                slug: "sensitive".to_string(),
+                domain: "Test".to_string(),
+                pattern_count: 1,
+                content_hash: manifest::compute_hash(content),
+                score: None,
+                fire_count: None,
+                deployed_at: None,
+                dependencies: vec![],
+            }],
+        };
+
+        let manifest_toml = toml::to_string_pretty(&bundle).unwrap();
+        std::fs::write(bundle_dir.path().join("manifest.toml"), manifest_toml).unwrap();
+
+        let report = validate_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: true,
+            },
+        )
+        .unwrap();
+
+        assert!(report.warnings.iter().any(|w| w.contains("H:/マイドライブ/")));
+    }
+
+    #[test]
+    fn validate_bundle_handles_multibyte_frontmatter() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let skills_dir = bundle_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let content = r#"---
+name: ai-interaction
+description: AIとの対話における洞察。ロケットパンチ比喩など。
+---
+
+## Overview
+text
+"#;
+        std::fs::write(skills_dir.join("ai-interaction.md"), content).unwrap();
+
+        let bundle = SkillBundle {
+            name: "jp-test".to_string(),
+            version: "1.0".to_string(),
+            author: None,
+            description: "test".to_string(),
+            created_at: Utc::now(),
+            source: BundleStats {
+                conversations: 1,
+                domains: 1,
+                patterns: 1,
+            },
+            skills: vec![BundleSkill {
+                slug: "ai-interaction".to_string(),
+                domain: "Test".to_string(),
+                pattern_count: 1,
+                content_hash: manifest::compute_hash(content),
+                score: None,
+                fire_count: None,
+                deployed_at: None,
+                dependencies: vec![],
+            }],
+        };
+
+        let manifest_toml = toml::to_string_pretty(&bundle).unwrap();
+        std::fs::write(bundle_dir.path().join("manifest.toml"), manifest_toml).unwrap();
+
+        let report = validate_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: false,
+            },
+        )
+        .unwrap();
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn fix_bundle_adds_frontmatter_for_missing() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let skills_dir = bundle_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let content = "# Heading only\n";
+        std::fs::write(skills_dir.join("no-fm.md"), content).unwrap();
+
+        let bundle = SkillBundle {
+            name: "fix-test".to_string(),
+            version: "1.0".to_string(),
+            author: None,
+            description: "test".to_string(),
+            created_at: Utc::now(),
+            source: BundleStats {
+                conversations: 1,
+                domains: 1,
+                patterns: 1,
+            },
+            skills: vec![BundleSkill {
+                slug: "no-fm".to_string(),
+                domain: "Test".to_string(),
+                pattern_count: 1,
+                content_hash: manifest::compute_hash(content),
+                score: None,
+                fire_count: None,
+                deployed_at: None,
+                dependencies: vec![],
+            }],
+        };
+
+        let manifest_toml = toml::to_string_pretty(&bundle).unwrap();
+        std::fs::write(bundle_dir.path().join("manifest.toml"), manifest_toml).unwrap();
+
+        let fixed = fix_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(fixed.updated_files, 1);
+
+        let report = validate_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: false,
+            },
+        )
+        .unwrap();
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn fix_bundle_inserts_missing_name_key() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let skills_dir = bundle_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let content = r#"---
+description: sample
+---
+
+## Section
+body
+"#;
+        std::fs::write(skills_dir.join("missing-name.md"), content).unwrap();
+
+        let bundle = SkillBundle {
+            name: "fix-test".to_string(),
+            version: "1.0".to_string(),
+            author: None,
+            description: "test".to_string(),
+            created_at: Utc::now(),
+            source: BundleStats {
+                conversations: 1,
+                domains: 1,
+                patterns: 1,
+            },
+            skills: vec![BundleSkill {
+                slug: "missing-name".to_string(),
+                domain: "Test".to_string(),
+                pattern_count: 1,
+                content_hash: manifest::compute_hash(content),
+                score: None,
+                fire_count: None,
+                deployed_at: None,
+                dependencies: vec![],
+            }],
+        };
+
+        let manifest_toml = toml::to_string_pretty(&bundle).unwrap();
+        std::fs::write(bundle_dir.path().join("manifest.toml"), manifest_toml).unwrap();
+
+        let fixed = fix_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(fixed.updated_files, 1);
+
+        let report = validate_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: false,
+            },
+        )
+        .unwrap();
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn fix_bundle_public_sanitizes_sensitive_markers() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let skills_dir = bundle_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let content = r#"---
+name: sensitive
+description: test
+---
+
+Path: H:/マイドライブ/
+Local: C:/Users/yuuji/
+Claude: ~/.claude/history.jsonl
+住所と現場名を扱う
+"#;
+        std::fs::write(skills_dir.join("sensitive.md"), content).unwrap();
+
+        let bundle = SkillBundle {
+            name: "yuuji-set".to_string(),
+            version: "1.0".to_string(),
+            author: Some("yuuji".to_string()),
+            description: "test".to_string(),
+            created_at: Utc::now(),
+            source: BundleStats {
+                conversations: 1,
+                domains: 1,
+                patterns: 1,
+            },
+            skills: vec![BundleSkill {
+                slug: "sensitive".to_string(),
+                domain: "Test".to_string(),
+                pattern_count: 1,
+                content_hash: manifest::compute_hash(content),
+                score: None,
+                fire_count: None,
+                deployed_at: None,
+                dependencies: vec![],
+            }],
+        };
+
+        let manifest_toml = toml::to_string_pretty(&bundle).unwrap();
+        std::fs::write(bundle_dir.path().join("manifest.toml"), manifest_toml).unwrap();
+
+        let _ = fix_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: true,
+            },
+        )
+        .unwrap();
+
+        let report = validate_bundle(
+            bundle_dir.path(),
+            &ValidateOptions {
+                public_profile: true,
+            },
+        )
+        .unwrap();
+
+        // Structural errors should be gone, and sensitive marker warnings should be removed.
+        assert!(report.errors.is_empty());
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.contains("sensitive marker found"))
+        );
     }
 
     #[test]

@@ -212,6 +212,18 @@ enum Command {
         bundle_path: PathBuf,
     },
 
+    /// Validate bundle structure and content quality
+    Validate {
+        /// Path to the .skillpack directory
+        bundle_path: PathBuf,
+        /// Apply stricter checks for public sharing
+        #[arg(long)]
+        public: bool,
+        /// Auto-fix common structural issues before validating
+        #[arg(long)]
+        fix: bool,
+    },
+
     /// Show dependency graph between skills, memory, and CLAUDE.md files
     Graph {
         /// Skills directory to scan
@@ -316,6 +328,11 @@ fn main() -> Result<()> {
         Command::Graph { dir } => cmd_graph(&config, dir),
         Command::Import { bundle_path, dir } => cmd_import(&config, bundle_path, dir),
         Command::Verify { bundle_path } => cmd_verify(bundle_path),
+        Command::Validate {
+            bundle_path,
+            public,
+            fix,
+        } => cmd_validate(bundle_path, public, fix),
         Command::Consolidate {
             names,
             all,
@@ -1469,6 +1486,61 @@ fn cmd_verify(bundle_path: PathBuf) -> Result<()> {
         for err in &errors {
             println!("  {}", err);
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_validate(bundle_path: PathBuf, public: bool, fix: bool) -> Result<()> {
+    if fix {
+        let fixed = bundle::fix_bundle(
+            &bundle_path,
+            &bundle::ValidateOptions {
+                public_profile: public,
+            },
+        )?;
+        println!("Auto-fix:");
+        println!("  updated files: {}", fixed.updated_files);
+        for note in fixed.notes.iter().take(20) {
+            println!("  - {}", note);
+        }
+        if fixed.notes.len() > 20 {
+            println!("  - ... {} more", fixed.notes.len() - 20);
+        }
+        println!();
+    }
+
+    let report = bundle::validate_bundle(
+        &bundle_path,
+        &bundle::ValidateOptions {
+            public_profile: public,
+        },
+    )?;
+
+    println!("Bundle validation:");
+    println!("  checked skills: {}", report.checked_skills);
+    println!("  errors: {}", report.errors.len());
+    println!("  warnings: {}", report.warnings.len());
+
+    if !report.errors.is_empty() {
+        println!("\nErrors:");
+        for err in &report.errors {
+            println!("  - {}", err);
+        }
+    }
+    if !report.warnings.is_empty() {
+        println!("\nWarnings:");
+        for warn in &report.warnings {
+            println!("  - {}", warn);
+        }
+    }
+
+    if report.errors.is_empty() && report.warnings.is_empty() {
+        println!("Result: OK");
+    } else if report.errors.is_empty() {
+        println!("Result: WARN");
+    } else {
+        println!("Result: FAILED");
     }
 
     Ok(())
