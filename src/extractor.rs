@@ -88,18 +88,10 @@ pub fn extract_patterns(
     let patterns: Vec<PatternEntry> = util::parse_json_response(&response)
         .map_err(|e| SkillMinerError::Parse(e.to_string()))?;
 
+    let source_ids: Vec<String> = conversations.iter().map(|c| c.summary.id.clone()).collect();
     let knowledge_patterns: Vec<KnowledgePattern> = patterns
         .into_iter()
-        .map(|p| KnowledgePattern {
-            title: p.title,
-            description: p.description,
-            steps: p.steps,
-            source_ids: conversations
-                .iter()
-                .map(|c| c.summary.id.clone())
-                .collect(),
-            frequency: p.frequency,
-        })
+        .map(|p| p.into_knowledge_pattern(source_ids.clone()))
         .collect();
 
     Ok(DomainCluster {
@@ -112,14 +104,30 @@ pub fn extract_patterns(
 /// Extract patterns from all domains in parallel using rayon.
 /// When `conv_map` is provided, avoids re-parsing conversations from disk.
 /// `max_parallel` controls the maximum number of concurrent AI calls.
-/// Returns (clusters, extract_call_count).
+/// Returns (clusters, extract_call_count, failed_domain_names).
 pub fn extract_all_parallel(
     groups: &HashMap<String, Vec<&ClassifiedConversation>>,
     conv_map: Option<&HashMap<String, &Conversation>>,
     options: &AnalyzeOptions,
     max_parallel: usize,
-) -> Result<(Vec<DomainCluster>, usize), SkillMinerError> {
-    let entries: Vec<_> = groups.iter().collect();
+) -> Result<(Vec<DomainCluster>, usize, Vec<String>), SkillMinerError> {
+    const MIN_CONVERSATIONS: usize = 1;
+    let entries: Vec<_> = groups
+        .iter()
+        .filter(|(domain, convs)| {
+            if convs.len() < MIN_CONVERSATIONS {
+                eprintln!(
+                    "  [SKIP] {} — {} conversations (min {})",
+                    domain,
+                    convs.len(),
+                    MIN_CONVERSATIONS
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
 
     let num_threads = max_parallel.min(entries.len()).max(1);
     let pool = rayon::ThreadPoolBuilder::new()
@@ -127,27 +135,35 @@ pub fn extract_all_parallel(
         .build()
         .map_err(|e| SkillMinerError::Config(format!("rayon pool: {}", e)))?;
 
-    let results: Vec<Result<DomainCluster, SkillMinerError>> = pool.install(|| {
+    let results: Vec<(String, Result<DomainCluster, SkillMinerError>)> = pool.install(|| {
         entries
             .par_iter()
             .map(|(domain, convs)| {
                 eprintln!("  {} ({} conversations)...", domain, convs.len());
-                extract_patterns(domain, convs, conv_map, options)
+                let r = extract_patterns(domain, convs, conv_map, options);
+                (domain.to_string(), r)
             })
             .collect()
     });
 
     let mut clusters = Vec::new();
-    for result in results {
-        clusters.push(result?);
+    let mut failed_domains = Vec::new();
+    for (domain, result) in results {
+        match result {
+            Ok(cluster) => clusters.push(cluster),
+            Err(e) => {
+                eprintln!("  [SKIP] {} extract failed: {} — continuing", domain, e);
+                failed_domains.push(domain);
+            }
+        }
     }
 
-    let call_count = clusters.len();
+    let call_count = clusters.len() + failed_domains.len();
 
     // Sort by domain name for deterministic output
     clusters.sort_by(|a, b| a.domain.cmp(&b.domain));
 
-    Ok((clusters, call_count))
+    Ok((clusters, call_count, failed_domains))
 }
 
 #[derive(serde::Deserialize)]
@@ -156,8 +172,24 @@ struct PatternEntry {
     description: String,
     #[serde(default)]
     steps: Vec<String>,
+    /// Legacy: 旧プロンプトは frequency を返す。新プロンプトは discussed: true を返す。
+    /// どちらが来ても受け入れる。
     #[serde(default = "default_freq")]
     frequency: usize,
+    #[serde(default)]
+    discussed: bool,
+}
+
+impl PatternEntry {
+    fn into_knowledge_pattern(self, source_ids: Vec<String>) -> KnowledgePattern {
+        KnowledgePattern {
+            title: self.title,
+            description: self.description,
+            steps: self.steps,
+            source_ids,
+            frequency: self.frequency,
+        }
+    }
 }
 
 fn default_freq() -> usize {

@@ -447,8 +447,11 @@ fn cmd_extract(config: &MineConfig, input: PathBuf, output: Option<PathBuf>, par
     eprintln!("Extracting patterns from {} domains (parallel, max {})...", groups.len(), parallel);
 
     // Standalone extract: no pre-parsed conversations, will parse from source_path
-    let (clusters, _extract_calls) =
+    let (clusters, _extract_calls, failed_domains) =
         extractor::extract_all_parallel(&groups, None, &config.ai_options, parallel)?;
+    if !failed_domains.is_empty() {
+        eprintln!("  {} domain(s) failed, {} succeeded", failed_domains.len(), clusters.len());
+    }
 
     for cluster in &clusters {
         println!(
@@ -536,7 +539,7 @@ fn cmd_mine(
         min_significance_ratio: min_significance,
     };
 
-    let result = miner::mine_progressive(config, &mut mf, &progressive, dry_run)?;
+    let result = miner::mine_progressive(config, &mut mf, &progressive, dry_run, &drafts_dir)?;
 
     // Display results
     for draft in &result.drafts {
@@ -615,12 +618,43 @@ fn cmd_mine(
         "Classify: {} AI calls",
         result.stats.classify_calls
     );
-    eprintln!(
-        "Extract: {} AI calls ({} domains)",
-        result.stats.extract_calls,
-        result.stats.extract_calls
-    );
+    if result.stats.extract_failures > 0 {
+        eprintln!(
+            "Extract: {} AI calls ({} ok, {} failed → will retry next run)",
+            result.stats.extract_calls,
+            result.stats.extract_calls - result.stats.extract_failures,
+            result.stats.extract_failures
+        );
+    } else {
+        eprintln!(
+            "Extract: {} AI calls ({} domains)",
+            result.stats.extract_calls,
+            result.stats.extract_calls
+        );
+    }
     eprintln!("Total: {} AI calls", result.stats.total_calls);
+
+    if !mf.pending_extracts.is_empty() {
+        eprintln!("Pending: {} conversations awaiting retry next run", mf.pending_extracts.len());
+    }
+
+    // Tool coverage check: report projects referenced in conversations but lacking skills
+    let all_files: Vec<Vec<String>> = result
+        .clusters
+        .iter()
+        .flat_map(|c| c.conversations.iter())
+        .map(|c| c.summary.files_touched.clone())
+        .collect();
+
+    if !all_files.is_empty() {
+        let home_dir = skill_miner::util::home_dir();
+        let uncovered =
+            skill_miner::tool_coverage::find_uncovered_projects(&all_files, &config.skills_dir, &home_dir);
+        let report = skill_miner::tool_coverage::format_report(&uncovered);
+        if !report.is_empty() {
+            eprint!("{}", report);
+        }
+    }
 
     Ok(())
 }
@@ -1296,7 +1330,7 @@ fn cmd_consolidate(
                 };
 
                 let content = std::fs::read_to_string(&md_path)?;
-                let current_desc = extract_description_from_md(&content).unwrap_or_default();
+                let current_desc = util::extract_description_from_md(&content).unwrap_or_default();
 
                 if current_desc.is_empty() {
                     eprintln!("  {} — descriptionが空、スキップ", slug);
@@ -1317,7 +1351,7 @@ fn cmd_consolidate(
                         } else {
                             // Replace description in MD file
                             let new_content =
-                                replace_description_in_md(&content, &new_desc);
+                                util::replace_description_in_md(&content, &new_desc);
                             std::fs::write(&md_path, new_content)?;
                             println!("  {} — description更新完了", slug);
                             println!("    OLD: {}", current_desc);
@@ -1352,57 +1386,6 @@ fn cmd_consolidate(
     }
 
     Ok(())
-}
-
-/// Extract description from YAML frontmatter in a skill MD file.
-fn extract_description_from_md(content: &str) -> Option<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.first()?.trim() != "---" {
-        return None;
-    }
-    for line in &lines[1..] {
-        if line.trim() == "---" {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix("description:") {
-            let desc = rest.trim();
-            // Remove surrounding quotes if present
-            let desc = desc.strip_prefix('"').unwrap_or(desc);
-            let desc = desc.strip_suffix('"').unwrap_or(desc);
-            return Some(desc.to_string());
-        }
-    }
-    None
-}
-
-/// Replace description in YAML frontmatter of a skill MD file.
-fn replace_description_in_md(content: &str, new_desc: &str) -> String {
-    let mut result = Vec::new();
-    let mut in_frontmatter = false;
-    let mut replaced = false;
-
-    for line in content.lines() {
-        if line.trim() == "---" {
-            if !in_frontmatter {
-                in_frontmatter = true;
-            } else {
-                in_frontmatter = false;
-            }
-            result.push(line.to_string());
-            continue;
-        }
-
-        if in_frontmatter && !replaced && line.starts_with("description:") {
-            // Escape quotes in description
-            let escaped = new_desc.replace('"', "\\\"");
-            result.push(format!("description: \"{}\"", escaped));
-            replaced = true;
-        } else {
-            result.push(line.to_string());
-        }
-    }
-
-    result.join("\n")
 }
 
 fn cmd_verify(bundle_path: PathBuf) -> Result<()> {

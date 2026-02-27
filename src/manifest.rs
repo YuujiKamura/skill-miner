@@ -106,7 +106,7 @@ pub fn create_from_drafts(
             .unwrap_or(0);
 
         // Compute hash from the file content
-        let content = crate::generator::format_skill_md(draft);
+        let content = draft.format_md();
         let hash = compute_hash(&content);
 
         // Find domain name from clusters
@@ -137,6 +137,7 @@ pub fn create_from_drafts(
         generated_at: Utc::now(),
         entries,
         mined_ids: HashSet::new(),
+        pending_extracts: Vec::new(),
     }
 }
 
@@ -152,6 +153,7 @@ pub fn create_from_directory(dir: &Path) -> Result<Manifest, SkillMinerError> {
             generated_at: Utc::now(),
             entries,
             mined_ids: HashSet::new(),
+            pending_extracts: Vec::new(),
         });
     }
 
@@ -199,6 +201,7 @@ pub fn create_from_directory(dir: &Path) -> Result<Manifest, SkillMinerError> {
         generated_at: Utc::now(),
         entries,
         mined_ids: HashSet::new(),
+        pending_extracts: Vec::new(),
     })
 }
 
@@ -245,6 +248,7 @@ mod tests {
                 fire_count: None,
             }],
             mined_ids: HashSet::new(),
+            pending_extracts: Vec::new(),
         }
     }
 

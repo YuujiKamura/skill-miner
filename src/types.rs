@@ -205,6 +205,18 @@ pub struct SkillDraft {
     pub diff: Option<String>,
 }
 
+impl SkillDraft {
+    /// Format as a complete .md file with YAML frontmatter.
+    pub fn format_md(&self) -> String {
+        format!(
+            "---\nname: {}\ndescription: \"{}\"\n---\n\n{}\n",
+            self.name,
+            self.description.replace('"', r#"\""#),
+            self.body
+        )
+    }
+}
+
 // ── State management types ──
 
 /// Status of a skill draft in the review pipeline
@@ -257,6 +269,31 @@ pub struct Manifest {
     /// 処理済み会話IDセット（漸増マイニングの重複排除用）
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub mined_ids: HashSet<String>,
+    /// 分類済みだが未extract（タイムアウト等で失敗したドメインの会話）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_extracts: Vec<ClassifiedConversation>,
+}
+
+impl Manifest {
+    /// Merge new drafts into this manifest, preserving existing entries.
+    /// Updates counts/hash for existing slugs; appends new ones.
+    pub fn merge_drafts(&mut self, drafts: &[SkillDraft], clusters: &[DomainCluster]) {
+        let new_mf = crate::manifest::create_from_drafts(drafts, clusters, std::path::Path::new(""));
+
+        for new_entry in new_mf.entries {
+            if let Some(existing) = self.entries.iter_mut().find(|e| e.slug == new_entry.slug) {
+                // Update counts/hash, preserve status/deployed_at/score/fire_count
+                existing.pattern_count = new_entry.pattern_count;
+                existing.conversation_count += new_entry.conversation_count;
+                existing.content_hash = new_entry.content_hash;
+                existing.generated_at = new_entry.generated_at;
+            } else {
+                self.entries.push(new_entry);
+            }
+        }
+
+        self.generated_at = chrono::Utc::now();
+    }
 }
 
 // ── Bundle types (export/import/trading) ──
@@ -338,6 +375,8 @@ pub struct PipelineStats {
     pub classify_calls: usize,
     /// Number of AI calls for extraction (domain count)
     pub extract_calls: usize,
+    /// Number of extract calls that failed (timeout etc)
+    pub extract_failures: usize,
     /// Total AI calls
     pub total_calls: usize,
 }

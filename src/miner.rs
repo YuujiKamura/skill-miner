@@ -8,7 +8,8 @@ use crate::types::{
 use crate::{classifier, compressor, extractor, generator, manifest, parser};
 use anyhow::Result;
 use chrono::{Duration, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 /// Result of a progressive mining run.
 pub struct MineResult {
@@ -38,14 +39,24 @@ pub struct ProgressiveConfig {
 
 /// Run progressive mining: expand time windows from recent to past,
 /// stopping when a window yields no new conversations.
+/// Supports pending_extracts: conversations classified but not yet extracted
+/// (e.g. due to timeout) are retried on the next run.
 pub fn mine_progressive(
     config: &MineConfig,
     manifest: &mut Manifest,
     progressive: &ProgressiveConfig,
     dry_run: bool,
+    manifest_dir: &Path,
 ) -> Result<MineResult> {
     let now = Utc::now();
     let max_lookback = Duration::hours(progressive.max_days as i64 * 24);
+
+    // Collect pending IDs so window scanning doesn't re-process them
+    let pending_ids: HashSet<String> = manifest
+        .pending_extracts
+        .iter()
+        .map(|c| c.summary.id.clone())
+        .collect();
 
     // Build time windows: first 12h, then 24h each
     let window_hours = std::iter::once(12i64).chain(std::iter::repeat(24i64));
@@ -56,6 +67,7 @@ pub fn mine_progressive(
     let mut windows_processed: usize = 0;
     let mut total_classify_calls: usize = 0;
     let mut skipped_low_value: usize = 0;
+    let mut consecutive_empty: usize = 0;
 
     for window_size in window_hours {
         let window_start_hours = cursor_hours + window_size;
@@ -88,19 +100,29 @@ pub fn mine_progressive(
             end,
         )?;
 
-        // Filter out already-mined conversations
+        // Filter out already-mined AND pending conversations
         let new_convs: Vec<Conversation> = convs
             .into_iter()
-            .filter(|c| !manifest.mined_ids.contains(&c.id))
+            .filter(|c| !manifest.mined_ids.contains(&c.id) && !pending_ids.contains(&c.id))
             .collect();
 
         if new_convs.is_empty() {
+            consecutive_empty += 1;
             eprintln!(
-                "[window {}] {}h ago → {}h ago: 0 new conversations → stopping",
-                windows_processed, clamped_start_hours, cursor_hours
+                "[window {}] {}h ago → {}h ago: 0 new conversations (empty streak: {})",
+                windows_processed, clamped_start_hours, cursor_hours, consecutive_empty
             );
-            break;
+            // Stop after 2 consecutive empty windows (conversations have gaps between sessions)
+            if consecutive_empty >= 2 {
+                eprintln!("  2 consecutive empty windows → stopping");
+                break;
+            }
+            windows_processed += 1;
+            cursor_hours = clamped_start_hours;
+            continue;
         }
+
+        consecutive_empty = 0;
 
         eprintln!(
             "[window {}] {}h ago → {}h ago: {} new conversations",
@@ -135,10 +157,7 @@ pub fn mine_progressive(
             significant_count as f64 / classified.len() as f64
         };
 
-        // Mark conversations as mined
-        for c in &new_convs {
-            manifest.mined_ids.insert(c.id.clone());
-        }
+        // Do NOT mark as mined here — only after successful extraction
 
         // Add results before potentially stopping
         all_classified.extend(classified);
@@ -159,7 +178,12 @@ pub fn mine_progressive(
         cursor_hours = clamped_start_hours;
     }
 
-    if all_classified.is_empty() {
+    // Merge pending + newly classified
+    let mut all_for_extract: Vec<ClassifiedConversation> =
+        manifest.pending_extracts.drain(..).collect();
+    all_for_extract.extend(all_classified);
+
+    if all_for_extract.is_empty() {
         eprintln!("No new conversations to process.");
         return Ok(MineResult {
             drafts: Vec::new(),
@@ -173,25 +197,60 @@ pub fn mine_progressive(
 
     let new_conversations = all_conversations.len();
 
-    // Build conv_map for extractor
+    // Save checkpoint: store all_for_extract in manifest before extraction
+    manifest.pending_extracts = all_for_extract.clone();
+    manifest::write_manifest(manifest_dir, manifest)?;
+
+    // Build conv_map only from newly parsed conversations
+    // (pending retries won't be here — extractor falls back to source_path parsing)
     let conv_map: HashMap<String, &Conversation> = all_conversations
         .iter()
         .map(|c| (c.id.clone(), c))
         .collect();
 
-    // Group all classified by domain, then extract patterns in parallel
-    let groups = classifier::group_by_domain(&all_classified);
+    // Group all for extraction by domain, then extract patterns in parallel
+    let groups = classifier::group_by_domain(&all_for_extract);
 
     eprintln!(
         "Extracting patterns from {} domains (parallel)...",
         groups.len()
     );
-    let (clusters, extract_calls) = extractor::extract_all_parallel(
+    let (clusters, extract_calls, failed_domains) = extractor::extract_all_parallel(
         &groups,
         Some(&conv_map),
         &config.ai_options,
         progressive.parallel,
     )?;
+    let extract_failures = failed_domains.len();
+    if extract_failures > 0 {
+        eprintln!(
+            "  {} domain(s) failed (timeout etc), {} succeeded",
+            extract_failures,
+            clusters.len()
+        );
+    }
+
+    // Rebuild pending_extracts: keep only failed domains' conversations
+    let failed_set: HashSet<&str> = failed_domains.iter().map(|s| s.as_str()).collect();
+    manifest.pending_extracts = all_for_extract
+        .into_iter()
+        .filter(|c| failed_set.contains(c.slug.as_str()))
+        .collect();
+
+    // Mark succeeded conversations as mined
+    for cluster in &clusters {
+        for conv in &cluster.conversations {
+            manifest.mined_ids.insert(conv.summary.id.clone());
+        }
+    }
+
+    if !manifest.pending_extracts.is_empty() {
+        eprintln!(
+            "  {} conversations pending retry (failed domains)",
+            manifest.pending_extracts.len()
+        );
+    }
+
     for cluster in &clusters {
         eprintln!("  {} → {} patterns", cluster.domain, cluster.patterns.len());
     }
@@ -206,6 +265,7 @@ pub fn mine_progressive(
     let stats = PipelineStats {
         classify_calls: total_classify_calls,
         extract_calls,
+        extract_failures,
         total_calls: total_classify_calls + extract_calls,
     };
 
@@ -220,31 +280,13 @@ pub fn mine_progressive(
 }
 
 /// Merge new drafts into an existing manifest, preserving existing entries.
+/// Delegates to `Manifest::merge_drafts()`.
 pub fn merge_into_manifest(
     manifest: &mut Manifest,
     drafts: &[SkillDraft],
     clusters: &[DomainCluster],
 ) {
-    let new_mf = manifest::create_from_drafts(drafts, clusters, std::path::Path::new(""));
-
-    for new_entry in new_mf.entries {
-        if let Some(existing) = manifest
-            .entries
-            .iter_mut()
-            .find(|e| e.slug == new_entry.slug)
-        {
-            // Update counts/hash, preserve status/deployed_at/score/fire_count
-            existing.pattern_count = new_entry.pattern_count;
-            existing.conversation_count += new_entry.conversation_count;
-            existing.content_hash = new_entry.content_hash;
-            existing.generated_at = new_entry.generated_at;
-            // status, deployed_at, score, fire_count are intentionally NOT overwritten
-        } else {
-            manifest.entries.push(new_entry);
-        }
-    }
-
-    manifest.generated_at = chrono::Utc::now();
+    manifest.merge_drafts(drafts, clusters);
 }
 
 #[cfg(test)]
@@ -259,6 +301,7 @@ mod tests {
             generated_at: Utc::now(),
             entries: Vec::new(),
             mined_ids: HashSet::new(),
+            pending_extracts: Vec::new(),
         }
     }
 

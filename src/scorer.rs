@@ -12,6 +12,20 @@ use crate::types::{DomainCluster, Manifest, SkillInvocation};
 use chrono::Utc;
 use std::collections::HashMap;
 
+// --- score_skills constants ---
+const FIRE_WEIGHT: f64 = 0.6;
+const PATTERN_WEIGHT: f64 = 0.4;
+const PRODUCTIVE_BASE: f64 = 0.5;
+const PRODUCTIVE_WEIGHT: f64 = 0.5;
+const DORMANCY_SEVERE_DAYS: i64 = 14;
+const DORMANCY_SEVERE_MULT: f64 = 0.2;
+const DORMANCY_MODERATE_DAYS: i64 = 7;
+const DORMANCY_MODERATE_MULT: f64 = 0.5;
+
+// --- score_patterns constants ---
+const PATTERN_FREQ_WEIGHT: f64 = 0.4;
+const PATTERN_FIRE_WEIGHT: f64 = 0.6;
+
 /// Score each skill based on invocation frequency, pattern richness, and productivity.
 /// Returns Vec<(slug, score)> sorted by score descending.
 pub fn score_skills(
@@ -122,15 +136,15 @@ pub fn score_skills(
             };
             let dormancy_multiplier = if r.fire_count == 0 {
                 match r.deployed_days {
-                    Some(days) if days > 14 => 0.2,
-                    Some(days) if days > 7 => 0.5,
+                    Some(days) if days > DORMANCY_SEVERE_DAYS => DORMANCY_SEVERE_MULT,
+                    Some(days) if days > DORMANCY_MODERATE_DAYS => DORMANCY_MODERATE_MULT,
                     _ => 1.0,
                 }
             } else {
                 1.0
             };
-            let base_score = 0.6 * fire_score + 0.4 * pattern_score;
-            let productive_multiplier = 0.5 + 0.5 * productive_rate;
+            let base_score = FIRE_WEIGHT * fire_score + PATTERN_WEIGHT * pattern_score;
+            let productive_multiplier = PRODUCTIVE_BASE + PRODUCTIVE_WEIGHT * productive_rate;
             let score = base_score * productive_multiplier * dormancy_multiplier;
             (r.slug, score)
         })
@@ -185,7 +199,7 @@ pub fn score_patterns(
                 hits as f64 / pattern.source_ids.len() as f64
             };
 
-            let score = 0.4 * frequency_score + 0.6 * source_fire_score;
+            let score = PATTERN_FREQ_WEIGHT * frequency_score + PATTERN_FIRE_WEIGHT * source_fire_score;
             (idx, score)
         })
         .collect();
@@ -216,6 +230,7 @@ mod tests {
             generated_at: Utc::now(),
             entries,
             mined_ids: std::collections::HashSet::new(),
+            pending_extracts: Vec::new(),
         }
     }
 

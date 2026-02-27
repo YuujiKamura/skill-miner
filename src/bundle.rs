@@ -429,6 +429,7 @@ mod tests {
                 make_entry("skill-b", "B", DraftStatus::Approved),
             ],
             mined_ids: std::collections::HashSet::new(),
+            pending_extracts: Vec::new(),
         };
 
         // Export
@@ -448,6 +449,7 @@ mod tests {
             generated_at: Utc::now(),
             entries: vec![],
             mined_ids: std::collections::HashSet::new(),
+            pending_extracts: Vec::new(),
         };
 
         let result =
@@ -594,6 +596,7 @@ mod tests {
                 fire_count: None,
             }],
             mined_ids: std::collections::HashSet::new(),
+            pending_extracts: Vec::new(),
         };
 
         let result =
@@ -626,6 +629,7 @@ mod tests {
                 fire_count: Some(12),
             }],
             mined_ids: std::collections::HashSet::new(),
+            pending_extracts: Vec::new(),
         };
 
         let opts = ExportOptions {

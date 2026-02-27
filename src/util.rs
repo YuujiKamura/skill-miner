@@ -60,6 +60,57 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// Extract description from YAML frontmatter in a skill MD file.
+pub fn extract_description_from_md(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.first()?.trim() != "---" {
+        return None;
+    }
+    for line in &lines[1..] {
+        if line.trim() == "---" {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("description:") {
+            let desc = rest.trim();
+            // Remove surrounding quotes if present
+            let desc = desc.strip_prefix('"').unwrap_or(desc);
+            let desc = desc.strip_suffix('"').unwrap_or(desc);
+            return Some(desc.to_string());
+        }
+    }
+    None
+}
+
+/// Replace description in YAML frontmatter of a skill MD file.
+pub fn replace_description_in_md(content: &str, new_desc: &str) -> String {
+    let mut result = Vec::new();
+    let mut in_frontmatter = false;
+    let mut replaced = false;
+
+    for line in content.lines() {
+        if line.trim() == "---" {
+            if !in_frontmatter {
+                in_frontmatter = true;
+            } else {
+                in_frontmatter = false;
+            }
+            result.push(line.to_string());
+            continue;
+        }
+
+        if in_frontmatter && !replaced && line.starts_with("description:") {
+            // Escape quotes in description
+            let escaped = new_desc.replace('"', "\\\"");
+            result.push(format!("description: \"{}\"", escaped));
+            replaced = true;
+        } else {
+            result.push(line.to_string());
+        }
+    }
+
+    result.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
