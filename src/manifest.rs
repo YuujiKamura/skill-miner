@@ -78,6 +78,27 @@ fn validate_transition(
     }
 }
 
+/// Find the cluster that contributed to a draft.
+/// First tries domain slug match (legacy), then checks if any pattern's skill_slug matches.
+fn find_cluster_for_draft<'a>(
+    draft: &crate::types::SkillDraft,
+    clusters: &'a [crate::types::DomainCluster],
+) -> Option<&'a crate::types::DomainCluster> {
+    // Legacy: domain slug matches draft name directly
+    if let Some(c) = clusters
+        .iter()
+        .find(|c| crate::domains::normalize(&c.domain).slug == draft.name)
+    {
+        return Some(c);
+    }
+    // Topic-level: find cluster containing a pattern whose skill_slug matches
+    clusters.iter().find(|c| {
+        c.patterns
+            .iter()
+            .any(|p| p.skill_slug.as_deref() == Some(&draft.name))
+    })
+}
+
 /// Create a manifest from generated skill drafts and domain clusters.
 pub fn create_from_drafts(
     drafts: &[crate::types::SkillDraft],
@@ -88,33 +109,32 @@ pub fn create_from_drafts(
 
     let mut entries = Vec::new();
     for draft in drafts {
-        // Find matching cluster for conversation count
-        let conv_count = clusters
-            .iter()
-            .find(|c| {
-                crate::domains::normalize(&c.domain).slug == draft.name
+        let cluster = find_cluster_for_draft(draft, clusters);
+
+        // Count patterns that belong to this draft's slug
+        let pattern_count = cluster
+            .map(|c| {
+                let domain_slug = crate::domains::normalize(&c.domain).slug.to_string();
+                if domain_slug == draft.name {
+                    // Domain-level: all patterns
+                    c.patterns.len()
+                } else {
+                    // Topic-level: only patterns with matching skill_slug
+                    c.patterns
+                        .iter()
+                        .filter(|p| p.skill_slug.as_deref() == Some(&draft.name))
+                        .count()
+                }
             })
-            .map(|c| c.conversations.len())
             .unwrap_or(0);
 
-        let pattern_count = clusters
-            .iter()
-            .find(|c| {
-                crate::domains::normalize(&c.domain).slug == draft.name
-            })
-            .map(|c| c.patterns.len())
-            .unwrap_or(0);
+        let conv_count = cluster.map(|c| c.conversations.len()).unwrap_or(0);
 
         // Compute hash from the file content
         let content = draft.format_md();
         let hash = compute_hash(&content);
 
-        // Find domain name from clusters
-        let domain = clusters
-            .iter()
-            .find(|c| {
-                crate::domains::normalize(&c.domain).slug == draft.name
-            })
+        let domain = cluster
             .map(|c| c.domain.clone())
             .unwrap_or_else(|| draft.name.clone());
 

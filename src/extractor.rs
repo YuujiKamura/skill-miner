@@ -9,6 +9,24 @@ use std::collections::HashMap;
 /// Prompt template for extraction (loaded from file at compile time).
 const EXTRACT_PROMPT: &str = include_str!("../prompts/extract.txt");
 
+/// Remove `<system-reminder>...</system-reminder>` blocks from text.
+fn strip_system_reminders(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(start) = remaining.find("<system-reminder>") {
+        result.push_str(&remaining[..start]);
+        if let Some(end) = remaining[start..].find("</system-reminder>") {
+            remaining = &remaining[start + end + "</system-reminder>".len()..];
+        } else {
+            // Unclosed tag - skip rest
+            remaining = "";
+            break;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
 /// Extract knowledge patterns from a domain cluster.
 /// When `conv_map` is provided, uses pre-parsed conversations to avoid re-parsing.
 /// When `conv_map` is None (e.g. standalone `extract` command), falls back to parsing from source_path.
@@ -40,14 +58,16 @@ pub fn extract_patterns(
         let mut exchanges = Vec::new();
         let mut user_msg = None;
 
-        for msg in full_conv.messages.iter().take(20) {
+        for msg in full_conv.messages.iter().take(40) {
             match msg.role {
                 Role::User => {
-                    user_msg = Some(util::truncate(&msg.content, 300));
+                    let cleaned = strip_system_reminders(&msg.content);
+                    user_msg = Some(util::truncate(&cleaned, 2000));
                 }
                 Role::Assistant => {
                     if let Some(u) = user_msg.take() {
-                        let a = util::truncate(&msg.content, 500);
+                        let cleaned_a = strip_system_reminders(&msg.content);
+                        let a = util::truncate(&cleaned_a, 3000);
                         exchanges.push(format!("U: {}\nA: {}", u, a));
                     }
                 }
@@ -168,10 +188,14 @@ pub fn extract_all_parallel(
 
 #[derive(serde::Deserialize)]
 struct PatternEntry {
+    #[serde(default)]
+    skill_slug: Option<String>,
     title: String,
     description: String,
     #[serde(default)]
     steps: Vec<String>,
+    #[serde(default)]
+    code_examples: Vec<String>,
     /// Legacy: old prompt returns frequency. New prompt returns discussed: true.
     /// Accept either format.
     #[serde(default = "default_freq")]
@@ -186,8 +210,10 @@ impl PatternEntry {
             title: self.title,
             description: self.description,
             steps: self.steps,
+            code_examples: self.code_examples,
             source_ids,
             frequency: self.frequency,
+            skill_slug: self.skill_slug,
         }
     }
 }

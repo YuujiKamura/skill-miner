@@ -262,8 +262,10 @@ mod tests {
             title: "test".to_string(),
             description: "test".to_string(),
             steps: vec![],
+            code_examples: vec![],
             source_ids: source_ids.into_iter().map(String::from).collect(),
             frequency,
+            skill_slug: None,
         }
     }
 

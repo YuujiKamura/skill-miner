@@ -17,6 +17,8 @@ fn make_test_cluster() -> DomainCluster {
                 ],
                 source_ids: vec!["abc12345".to_string(), "def67890".to_string()],
                 frequency: 5,
+                code_examples: vec![],
+                skill_slug: None,
             },
             KnowledgePattern {
                 title: "Test-driven development".to_string(),
@@ -24,6 +26,8 @@ fn make_test_cluster() -> DomainCluster {
                 steps: vec![],
                 source_ids: vec!["abc12345".to_string()],
                 frequency: 3,
+                code_examples: vec![],
+                skill_slug: None,
             },
         ],
     }

@@ -1285,8 +1285,10 @@ fn cmd_consolidate(
                     title: String::new(),
                     description: String::new(),
                     steps: vec![],
+                    code_examples: vec![],
                     source_ids: vec![],
                     frequency: 1,
+                    skill_slug: None,
                 })
                 .collect();
             skill_miner::DomainCluster {

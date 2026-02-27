@@ -143,8 +143,10 @@ fn e2e_fixture_classify_to_generate() {
                 title: p.title,
                 description: p.description,
                 steps: p.steps,
+                code_examples: vec![],
                 source_ids: vec!["conv001".to_string()],
                 frequency: p.frequency,
+                skill_slug: None,
             })
             .collect(),
     };
@@ -211,8 +213,10 @@ fn e2e_multiple_clusters_generate_multiple_drafts() {
             title: "Pattern A".to_string(),
             description: "Description A".to_string(),
             steps: vec![],
+            code_examples: vec![],
             source_ids: vec!["id1".to_string()],
             frequency: 2,
+            skill_slug: None,
         }],
     };
     let cluster2 = DomainCluster {
@@ -222,8 +226,10 @@ fn e2e_multiple_clusters_generate_multiple_drafts() {
             title: "Pattern B".to_string(),
             description: "Description B".to_string(),
             steps: vec!["Step 1".to_string()],
+            code_examples: vec![],
             source_ids: vec!["id2".to_string()],
             frequency: 1,
+            skill_slug: None,
         }],
     };
 
@@ -248,8 +254,10 @@ fn e2e_skill_draft_format_contains_steps() {
                 "Run cargo check".to_string(),
                 "Fix errors".to_string(),
             ],
+            code_examples: vec![],
             source_ids: vec!["s1".to_string()],
             frequency: 5,
+            skill_slug: None,
         }],
     };
 

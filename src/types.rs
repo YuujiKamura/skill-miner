@@ -182,10 +182,16 @@ pub struct KnowledgePattern {
     pub description: String,
     /// Concrete steps or code examples
     pub steps: Vec<String>,
+    /// Verbatim code snippets, JSON structures, command lines extracted from conversations
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub code_examples: Vec<String>,
     /// Source conversation IDs
     pub source_ids: Vec<String>,
     /// How many times this pattern appeared
     pub frequency: usize,
+    /// Topic-level slug for grouping patterns into separate skills
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_slug: Option<String>,
 }
 
 /// Generated skill definition

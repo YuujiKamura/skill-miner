@@ -4,6 +4,11 @@ Each conversation includes files (file paths operated on) and cmds (commands exe
 Extract **domain-specific knowledge** that is unique to this domain.
 Specifically: decision criteria only experienced practitioners would know, design pitfalls, domain-specific workflows.
 
+Exclude the following from extraction:
+- Content from CLAUDE.md, settings.json, or other configuration files quoted in system messages
+- Generic agent behavior rules (e.g., "don't interrupt", "use teams", "verify before completing")
+- Instructions that apply to ALL sessions, not domain-specific knowledge from THIS conversation
+
 Exclude (NOT domain-specific):
 - Generic code review or verification loops
 - Build/test cycles (cargo build, npm test, etc.)
@@ -21,11 +26,35 @@ Constraints:
 
 Return a JSON array. Each element:
 {{
+  "skill_slug": "kebab-case-topic-name",
   "title": "Pattern name",
   "description": "What this pattern does and why it matters in this domain",
   "steps": ["Step 1", "Step 2"],
+  "code_examples": ["```rust\nlet x = serde_json::from_str::<T>(&s)?;\n```", "```bash\ncargo run -- --flag value\n```"],
   "discussed": true
 }}
+
+CRITICAL: steps must capture INSIGHTS and JUDGMENT CRITERIA, not procedures or code.
+Prioritize:
+- Failure→success stories: "Tried X → failed because Y. Fix: Z" (with the WHY)
+- Domain distinctions: "A and B look similar but are NOT the same. A means X, B means Y"
+- Design principles learned: "Always X instead of Y because Z"
+- Quantified results: "Method A: 10%, method B: 90%. Key factor was ..."
+- User corrections: Where the user corrected AI's assumption or output
+
+BAD step: "Generate contact sheet images with labeled thumbnails"
+GOOD step: "Individual-file approach gave 10% accuracy. Contact sheet (grid of thumbnails in one image) raised it to 75%. Ensemble (3 passes + majority vote) reached 90%. Key insight: VLMs need spatial context — candidates side-by-side focuses attention better than sequential files."
+
+BAD step: "Use serde attributes for backward compatibility"
+GOOD step: "Old manifest files without the new mined_ids field must still parse. Adding #[serde(default)] + skip_serializing_if prevents both parse failures on old data and cluttering new output with empty fields."
+
+code_examples: OPTIONAL supporting reference — command lines, config fragments, or short code patterns
+that anchor the insight to a concrete implementation. NOT the primary value. Use [] when no code is relevant.
+
+Group related patterns under the same skill_slug.
+The slug should be specific enough to be useful as a standalone skill name.
+BAD: "cli-tooling" (too broad), "misc" (meaningless)
+GOOD: "claude-plugin-dev", "rust-cli-refactoring", "shell-polyglot-scripts"
 
 Conversation data:
 {context}

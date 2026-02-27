@@ -323,8 +323,10 @@ mod tests {
                 title: "pattern".to_string(),
                 description: "desc".to_string(),
                 steps: vec![],
+                code_examples: vec![],
                 source_ids: vec![],
                 frequency: 1,
+                skill_slug: None,
             }],
         }];
 

@@ -1,7 +1,6 @@
 // Deployer module: deploy skills, diff, prune
 // Issue #22
 
-use crate::domains;
 use crate::error::SkillMinerError;
 use crate::manifest;
 use crate::types::{DeployResult, DraftEntry, DraftStatus, Manifest, PruneOptions, SkillDraft};
@@ -193,30 +192,16 @@ pub fn check_existing_skills(
 ) -> Result<(), SkillMinerError> {
     let existing = load_existing_skills(skills_dir)?;
 
-    // Build a slug→(name, path) lookup for domain master slug matching
-    let slug_map: HashMap<String, (&String, &std::path::PathBuf)> = existing
-        .iter()
-        .map(|(name, path)| {
-            let slug = domains::normalize(name).slug.clone();
-            (slug, (name, path))
-        })
-        .collect();
-
     for draft in drafts.iter_mut() {
         // Check by exact name match
         if let Some(path) = existing.get(&draft.name) {
             draft.existing_skill = Some(path.clone());
         }
 
-        // Check by domain master slug match
-        if draft.existing_skill.is_none() {
-            let draft_slug = &domains::normalize(&draft.name).slug;
-            if let Some((_name, path)) = slug_map.get(draft_slug) {
-                draft.existing_skill = Some((*path).clone());
-            }
-        }
-
-        // Check by substring overlap (original logic)
+        // Check by substring overlap
+        // Topic-granularity slugs (e.g., "claude-plugin-dev") are matched directly,
+        // NOT normalized through domains::normalize (which would collapse them to
+        // broad domain slugs like "cli-tooling").
         if draft.existing_skill.is_none() {
             for (name, path) in &existing {
                 if name.contains(&draft.name) || draft.name.contains(name) {
