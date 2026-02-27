@@ -22,6 +22,8 @@ pub struct ExportOptions {
     pub description: String,
     /// Include referenced memory/context files in bundle
     pub include_context: bool,
+    /// Export sanitized content suitable for public sharing
+    pub public_sanitized: bool,
 }
 
 /// Export skills as a portable .skillpack directory.
@@ -58,7 +60,12 @@ pub fn export_bundle(
             continue;
         }
 
-        let content = std::fs::read_to_string(&source)?;
+        let original_content = std::fs::read_to_string(&source)?;
+        let content = if opts.public_sanitized {
+            sanitize_skill_content(&original_content)
+        } else {
+            original_content
+        };
         let hash = manifest::compute_hash(&content);
 
         // Verify hash matches
@@ -99,10 +106,22 @@ pub fn export_bundle(
     }
 
     let bundle = SkillBundle {
-        name: opts.name.clone(),
+        name: if opts.public_sanitized {
+            sanitize_bundle_name(&opts.name)
+        } else {
+            opts.name.clone()
+        },
         version: "1.0".to_string(),
-        author: opts.author.clone(),
-        description: opts.description.clone(),
+        author: if opts.public_sanitized {
+            None
+        } else {
+            opts.author.clone()
+        },
+        description: if opts.public_sanitized {
+            "Public skill bundle (sanitized)".to_string()
+        } else {
+            opts.description.clone()
+        },
         created_at: chrono::Utc::now(),
         source: BundleStats {
             conversations: entries.iter().map(|e| e.conversation_count).sum(),
@@ -118,6 +137,48 @@ pub fn export_bundle(
     std::fs::write(output.join("manifest.toml"), bundle_toml)?;
 
     Ok(bundle)
+}
+
+fn sanitize_bundle_name(name: &str) -> String {
+    if name.ends_with("-public") {
+        return name.to_string();
+    }
+    format!("{}-public", name)
+}
+
+fn sanitize_skill_content(content: &str) -> String {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let mut s = line.to_string();
+
+        // Scrub concrete paths and user-specific environment hints.
+        s = s.replace("H:/マイドライブ/", "<DRIVE_PATH>/");
+        s = s.replace("C:/Users/", "<USER_HOME>/");
+        s = s.replace("~/.claude/history.jsonl", "<CLAUDE_HISTORY>");
+        s = s.replace("~/.claude/skills/", "<CLAUDE_SKILLS_DIR>/");
+        s = s.replace("CLAUDECODE= claude -p", "claude -p");
+
+        // Scrub highly specific operational wording.
+        s = s.replace("住所", "地域情報");
+        s = s.replace("現場名", "案件名");
+
+        out.push(s);
+    }
+
+    let mut redacted = out.join("\n");
+
+    // If YAML frontmatter has an author key, remove it.
+    redacted = redacted
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("author:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if content.ends_with('\n') {
+        redacted.push('\n');
+    }
+
+    redacted
 }
 
 /// Import a .skillpack bundle into the drafts directory.
@@ -439,6 +500,7 @@ mod tests {
             author: Some("tester".to_string()),
             description: "test export".to_string(),
             include_context: false,
+            public_sanitized: false,
         };
         let bundle = export_bundle(draft_dir.path(), bundle_dir.path(), &manifest, &opts).unwrap();
         assert_eq!(bundle.skills.len(), 2);
@@ -638,6 +700,7 @@ mod tests {
             author: None,
             description: "test metadata".to_string(),
             include_context: false,
+            public_sanitized: false,
         };
 
         let bundle = export_bundle(draft_dir.path(), bundle_dir.path(), &manifest, &opts).unwrap();
@@ -749,5 +812,63 @@ content_hash = "{}"
         // Verify should also work
         let errors = verify_bundle(bundle_dir.path()).unwrap();
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn export_public_sanitizes_metadata_and_content() {
+        let draft_dir = tempfile::tempdir().unwrap();
+        let bundle_dir = tempfile::tempdir().unwrap();
+
+        let content = r#"---
+name: sensitive
+author: yuuji
+---
+
+1. Google Drive（H:/マイドライブ/）を参照する
+2. 住所と現場名を含む一覧を作る
+3. CLAUDECODE= claude -p "検証"
+"#;
+        std::fs::write(draft_dir.path().join("sensitive.md"), content).unwrap();
+
+        let manifest = Manifest {
+            version: "1.0".to_string(),
+            generated_at: Utc::now(),
+            entries: vec![DraftEntry {
+                slug: "sensitive".to_string(),
+                domain: "test".to_string(),
+                status: DraftStatus::Approved,
+                pattern_count: 3,
+                conversation_count: 2,
+                generated_at: Utc::now(),
+                deployed_at: None,
+                content_hash: manifest::compute_hash(content),
+                score: None,
+                fire_count: None,
+            }],
+            mined_ids: std::collections::HashSet::new(),
+            pending_extracts: Vec::new(),
+        };
+
+        let opts = ExportOptions {
+            approved_only: false,
+            name: "my-skills".to_string(),
+            author: Some("yuuji".to_string()),
+            description: "private desc".to_string(),
+            include_context: false,
+            public_sanitized: true,
+        };
+
+        let bundle = export_bundle(draft_dir.path(), bundle_dir.path(), &manifest, &opts).unwrap();
+        assert_eq!(bundle.name, "my-skills-public");
+        assert!(bundle.author.is_none());
+        assert_eq!(bundle.description, "Public skill bundle (sanitized)");
+
+        let exported = std::fs::read_to_string(bundle_dir.path().join("skills").join("sensitive.md"))
+            .unwrap();
+        assert!(!exported.contains("author: yuuji"));
+        assert!(exported.contains("<DRIVE_PATH>/"));
+        assert!(exported.contains("地域情報"));
+        assert!(exported.contains("案件名"));
+        assert!(!exported.contains("CLAUDECODE= claude -p"));
     }
 }

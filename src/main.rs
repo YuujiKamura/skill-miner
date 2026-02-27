@@ -183,6 +183,15 @@ enum Command {
         /// Include referenced memory/context files in bundle
         #[arg(long)]
         include_context: bool,
+        /// Export a sanitized public bundle
+        #[arg(long, conflicts_with = "both")]
+        public: bool,
+        /// Export both private and sanitized public bundles
+        #[arg(long, conflicts_with = "public")]
+        both: bool,
+        /// Explicit output directory for the public bundle (used with --both)
+        #[arg(long, requires = "both")]
+        public_output: Option<PathBuf>,
         /// Drafts directory
         #[arg(short, long)]
         dir: Option<PathBuf>,
@@ -287,8 +296,23 @@ fn main() -> Result<()> {
             description,
             approved_only,
             include_context,
+            public,
+            both,
+            public_output,
             dir,
-        } => cmd_export(&config, output, name, author, description, approved_only, include_context, dir),
+        } => cmd_export(
+            &config,
+            output,
+            name,
+            author,
+            description,
+            approved_only,
+            include_context,
+            public,
+            both,
+            public_output,
+            dir,
+        ),
         Command::Graph { dir } => cmd_graph(&config, dir),
         Command::Import { bundle_path, dir } => cmd_import(&config, bundle_path, dir),
         Command::Verify { bundle_path } => cmd_verify(bundle_path),
@@ -956,22 +980,67 @@ fn cmd_export(
     description: String,
     approved_only: bool,
     include_context: bool,
+    public: bool,
+    both: bool,
+    public_output: Option<PathBuf>,
     dir: Option<PathBuf>,
 ) -> Result<()> {
     let drafts_dir = resolve_drafts_dir(config, dir);
     let mf = load_or_create_manifest(&drafts_dir)?;
 
-    let opts = bundle::ExportOptions {
+    let private_opts = bundle::ExportOptions {
+        approved_only,
+        name: name.clone(),
+        author: author.clone(),
+        description: description.clone(),
+        include_context,
+        public_sanitized: false,
+    };
+
+    let public_opts = bundle::ExportOptions {
         approved_only,
         name,
         author,
         description,
         include_context,
+        public_sanitized: true,
     };
 
-    let bun = bundle::export_bundle(&drafts_dir, &output, &mf, &opts)?;
+    if both {
+        let private_bundle = bundle::export_bundle(&drafts_dir, &output, &mf, &private_opts)?;
+        print_bundle_summary("Private", &output, &private_bundle, include_context);
 
-    println!("=== Exported Bundle ===");
+        let public_dir = public_output.unwrap_or_else(|| derive_public_output_path(&output));
+        let public_bundle = bundle::export_bundle(&drafts_dir, &public_dir, &mf, &public_opts)?;
+        print_bundle_summary("Public (sanitized)", &public_dir, &public_bundle, include_context);
+
+        return Ok(());
+    }
+
+    let opts = if public { &public_opts } else { &private_opts };
+    let label = if public { "Public (sanitized)" } else { "Private" };
+    let bun = bundle::export_bundle(&drafts_dir, &output, &mf, opts)?;
+    print_bundle_summary(label, &output, &bun, include_context);
+
+    Ok(())
+}
+
+fn derive_public_output_path(output: &std::path::Path) -> PathBuf {
+    let output_str = output.to_string_lossy();
+    if output_str.ends_with(".skillpack") {
+        PathBuf::from(output_str.replace(".skillpack", "-public.skillpack"))
+    } else {
+        PathBuf::from(format!("{}-public", output_str))
+    }
+}
+
+fn print_bundle_summary(
+    label: &str,
+    output: &std::path::Path,
+    bun: &skill_miner::SkillBundle,
+    include_context: bool,
+) {
+    println!("=== Exported Bundle ({}) ===", label);
     println!("Name: {}", bun.name);
     println!("Skills: {}", bun.skills.len());
     println!(
@@ -981,15 +1050,11 @@ fn cmd_export(
     if include_context {
         let ctx_dir = output.join("context").join("memory");
         if ctx_dir.exists() {
-            let count = std::fs::read_dir(&ctx_dir)
-                .map(|rd| rd.count())
-                .unwrap_or(0);
+            let count = std::fs::read_dir(&ctx_dir).map(|rd| rd.count()).unwrap_or(0);
             println!("Context files: {}", count);
         }
     }
     println!("Output: {}", output.display());
-
-    Ok(())
 }
 
 fn cmd_import(config: &MineConfig, bundle_path: PathBuf, dir: Option<PathBuf>) -> Result<()> {
