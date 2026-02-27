@@ -4,6 +4,20 @@
 
 skill-miner reads your Claude Code conversation history, classifies conversations by domain, extracts recurring patterns, and deploys them as skill files that Claude Code can use in future sessions. It uses progressive time-window mining so only new conversations are processed on each run.
 
+## Why skill-miner?
+
+A common best practice for Claude Code is to maintain a `tasks/lessons.md` file — a manually curated list of corrections, domain rules, and workflow insights accumulated across sessions ([reference](https://qiita.com/uno_ha07/items/5820d195510861b5be71)). This "self-improvement loop" works, but it has limits:
+
+| Manual approach | skill-miner |
+|---|---|
+| You remember to write it down | Automatically extracts from every conversation |
+| One flat file, grows unwieldy | Organized by domain, scored by usage |
+| Stale entries stay forever | Dormant skills are auto-rejected via consolidation |
+| Sharing requires copy-paste | Portable `.skillpack` bundles for import/export |
+| No feedback on what's useful | Fire rate + productivity scoring shows what actually helps |
+
+skill-miner automates the entire loop: **mine** conversations for patterns, **deploy** them as skills, **consolidate** by pruning what's unused, and **refine** descriptions from real trigger phrases. Your Claude Code instance gets smarter over time without manual curation.
+
 ## Quick Start
 
 ```sh
