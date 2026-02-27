@@ -164,7 +164,7 @@ pub fn prune(
     let mut removed = Vec::new();
 
     manifest.entries.retain(|entry| {
-        let should_remove = (opts.misc && entry.domain == "その他")
+        let should_remove = (opts.misc && entry.slug == "misc")
             || (opts.rejected && entry.status == DraftStatus::Rejected)
             || (opts.duplicates && is_duplicate_japanese_name(&entry.slug));
 
@@ -450,7 +450,7 @@ mod tests {
         let draft_content = "---\nname: test\n---\n\n# Test\n";
         std::fs::write(draft_dir.path().join("test-skill.md"), draft_content).unwrap();
 
-        let entry = make_entry("test-skill", "テスト", DraftStatus::Approved);
+        let entry = make_entry("test-skill", "Testing & QA", DraftStatus::Approved);
         let result = deploy_skill(draft_dir.path(), skills_dir.path(), &entry).unwrap();
 
         assert!(!result.was_update);
@@ -491,9 +491,9 @@ mod tests {
         std::fs::write(draft_dir.path().join("good.md"), "good").unwrap();
 
         let mut manifest = make_manifest_with(vec![
-            make_entry("misc", "その他", DraftStatus::Draft),
-            make_entry("rejected-one", "テスト", DraftStatus::Rejected),
-            make_entry("good", "良い", DraftStatus::Draft),
+            make_entry("misc", "Miscellaneous", DraftStatus::Draft),
+            make_entry("rejected-one", "Testing & QA", DraftStatus::Rejected),
+            make_entry("good", "Web Development", DraftStatus::Draft),
         ]);
 
         let opts = PruneOptions {

@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn empty_patterns_return_empty() {
-        let cluster = make_cluster("その他", vec![]);
+        let cluster = make_cluster("Miscellaneous", vec![]);
         let result = score_patterns(&cluster, &[]);
         assert!(result.is_empty());
     }
@@ -287,12 +287,12 @@ mod tests {
             make_invocation("pavement", "c2", true),
         ];
         let manifest = make_manifest(vec![
-            make_entry("pavement", "舗装工事", Some(2)),
-            make_entry("misc", "その他", Some(0)),
+            make_entry("pavement", "Web Development", Some(2)),
+            make_entry("misc", "Miscellaneous", Some(0)),
         ]);
         let clusters = vec![
-            make_cluster("舗装工事", vec![make_pattern(3, vec!["c1"])]),
-            make_cluster("その他", vec![make_pattern(1, vec![])]),
+            make_cluster("Web Development", vec![make_pattern(3, vec!["c1"])]),
+            make_cluster("Miscellaneous", vec![make_pattern(1, vec![])]),
         ];
 
         let result = score_skills(&invocations, &manifest, &clusters);
@@ -314,8 +314,8 @@ mod tests {
             make_invocation("pavement", "c2", false),
         ];
 
-        let manifest = make_manifest(vec![make_entry("pavement", "舗装工事", Some(2))]);
-        let clusters = vec![make_cluster("舗装工事", vec![make_pattern(2, vec!["c1"])])];
+        let manifest = make_manifest(vec![make_entry("pavement", "Web Development", Some(2))]);
+        let clusters = vec![make_cluster("Web Development", vec![make_pattern(2, vec!["c1"])])];
 
         let result_prod = score_skills(&invocations_productive, &manifest, &clusters);
         let result_unprod = score_skills(&invocations_unproductive, &manifest, &clusters);
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn pattern_scoring_respects_frequency() {
         let cluster = make_cluster(
-            "舗装工事",
+            "Web Development",
             vec![
                 make_pattern(1, vec!["c1"]),
                 make_pattern(5, vec!["c1"]),
@@ -351,8 +351,8 @@ mod tests {
     fn normalization_max_values_become_one() {
         // Single entry with fires and patterns -> all normalized values = 1.0
         let invocations = vec![make_invocation("pavement", "c1", true)];
-        let manifest = make_manifest(vec![make_entry("pavement", "舗装工事", Some(1))]);
-        let clusters = vec![make_cluster("舗装工事", vec![make_pattern(3, vec!["c1"])])];
+        let manifest = make_manifest(vec![make_entry("pavement", "Web Development", Some(1))]);
+        let clusters = vec![make_cluster("Web Development", vec![make_pattern(3, vec!["c1"])])];
 
         let result = score_skills(&invocations, &manifest, &clusters);
         assert_eq!(result.len(), 1);
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn pattern_source_fire_score_works() {
         let cluster = make_cluster(
-            "舗装工事",
+            "Web Development",
             vec![
                 make_pattern(2, vec!["c1", "c2"]), // both in invocations
                 make_pattern(2, vec!["c3", "c4"]), // neither in invocations
@@ -390,12 +390,12 @@ mod tests {
     fn no_fires_gives_full_productive_rate() {
         // Entry with no fire_count -> productive_rate defaults to 1.0
         let manifest = make_manifest(vec![
-            make_entry("pavement", "舗装工事", Some(0)),
-            make_entry("misc", "その他", Some(0)),
+            make_entry("pavement", "Web Development", Some(0)),
+            make_entry("misc", "Miscellaneous", Some(0)),
         ]);
         let clusters = vec![
-            make_cluster("舗装工事", vec![make_pattern(2, vec![])]),
-            make_cluster("その他", vec![make_pattern(1, vec![])]),
+            make_cluster("Web Development", vec![make_pattern(2, vec![])]),
+            make_cluster("Miscellaneous", vec![make_pattern(1, vec![])]),
         ];
 
         let result = score_skills(&[], &manifest, &clusters);
@@ -423,8 +423,8 @@ mod tests {
     #[test]
     fn dormancy_penalty_zero_fires_new_deploy() {
         // deployed_at = now, fire_count=0 -> no penalty (1.0 multiplier)
-        let manifest = make_manifest(vec![make_entry_deployed("pavement", "舗装工事", Some(0), 0)]);
-        let clusters = vec![make_cluster("舗装工事", vec![make_pattern(2, vec![])])];
+        let manifest = make_manifest(vec![make_entry_deployed("pavement", "Web Development", Some(0), 0)]);
+        let clusters = vec![make_cluster("Web Development", vec![make_pattern(2, vec![])])];
 
         let result = score_skills(&[], &manifest, &clusters);
         // pattern_score = 1.0, fire_score = 0.0
@@ -438,8 +438,8 @@ mod tests {
     fn dormancy_penalty_zero_fires_8_days() {
         // deployed_at = 8 days ago, fire_count=0 -> 0.5 multiplier
         let manifest =
-            make_manifest(vec![make_entry_deployed("pavement", "舗装工事", Some(0), 8)]);
-        let clusters = vec![make_cluster("舗装工事", vec![make_pattern(2, vec![])])];
+            make_manifest(vec![make_entry_deployed("pavement", "Web Development", Some(0), 8)]);
+        let clusters = vec![make_cluster("Web Development", vec![make_pattern(2, vec![])])];
 
         let result = score_skills(&[], &manifest, &clusters);
         // base = 0.4, productive = 1.0, dormancy = 0.5
@@ -452,8 +452,8 @@ mod tests {
     fn dormancy_penalty_zero_fires_15_days() {
         // deployed_at = 15 days ago, fire_count=0 -> 0.2 multiplier
         let manifest =
-            make_manifest(vec![make_entry_deployed("pavement", "舗装工事", Some(0), 15)]);
-        let clusters = vec![make_cluster("舗装工事", vec![make_pattern(2, vec![])])];
+            make_manifest(vec![make_entry_deployed("pavement", "Web Development", Some(0), 15)]);
+        let clusters = vec![make_cluster("Web Development", vec![make_pattern(2, vec![])])];
 
         let result = score_skills(&[], &manifest, &clusters);
         // base = 0.4, productive = 1.0, dormancy = 0.2
@@ -467,8 +467,8 @@ mod tests {
         // deployed_at = 15 days ago, fire_count > 0 -> no penalty
         let invocations = vec![make_invocation("pavement", "c1", true)];
         let manifest =
-            make_manifest(vec![make_entry_deployed("pavement", "舗装工事", Some(1), 15)]);
-        let clusters = vec![make_cluster("舗装工事", vec![make_pattern(2, vec!["c1"])])];
+            make_manifest(vec![make_entry_deployed("pavement", "Web Development", Some(1), 15)]);
+        let clusters = vec![make_cluster("Web Development", vec![make_pattern(2, vec!["c1"])])];
 
         let result = score_skills(&invocations, &manifest, &clusters);
         // fire_score=1.0, pattern_score=1.0, productive_rate=1.0

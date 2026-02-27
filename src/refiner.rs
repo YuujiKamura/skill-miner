@@ -45,22 +45,22 @@ mod tests {
 
     #[test]
     fn build_prompt_replaces_placeholders() {
-        let desc = "テスト。テストスキル。テストと言われた時に使用。";
+        let desc = "Testing & QA. (test patterns) Use when user mentions: test, coverage.";
         let contexts = vec![
-            "テストを実行して".to_string(),
-            "ユニットテスト書いて".to_string(),
+            "run the tests".to_string(),
+            "write unit tests".to_string(),
         ];
         let result = build_refine_prompt(desc, &contexts);
         assert!(result.contains(desc));
-        assert!(result.contains("- テストを実行して"));
-        assert!(result.contains("- ユニットテスト書いて"));
+        assert!(result.contains("- run the tests"));
+        assert!(result.contains("- write unit tests"));
         assert!(!result.contains("{current_description}"));
         assert!(!result.contains("{trigger_contexts}"));
     }
 
     #[test]
     fn build_prompt_empty_contexts() {
-        let desc = "テスト。";
+        let desc = "Testing.";
         let contexts: Vec<String> = vec![];
         let result = build_refine_prompt(desc, &contexts);
         assert!(result.contains(desc));

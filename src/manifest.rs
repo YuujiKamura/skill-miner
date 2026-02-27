@@ -237,7 +237,7 @@ mod tests {
             generated_at: Utc::now(),
             entries: vec![DraftEntry {
                 slug: "test-skill".to_string(),
-                domain: "テスト".to_string(),
+                domain: "Testing & QA".to_string(),
                 status: DraftStatus::Draft,
                 pattern_count: 3,
                 conversation_count: 5,

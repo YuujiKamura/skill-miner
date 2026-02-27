@@ -430,7 +430,7 @@ mod tests {
             messages: vec![
                 Message {
                     role: Role::User,
-                    content: "写真を整理して".to_string(),
+                    content: "organize the photos".to_string(),
                     timestamp: None,
                     tool_uses: vec![],
                 },
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].skill_name, "my-skill");
         assert!(invocations[0].was_productive);
-        assert_eq!(invocations[0].trigger_context, Some("写真を整理して".to_string()));
+        assert_eq!(invocations[0].trigger_context, Some("organize the photos".to_string()));
     }
 
     #[test]
@@ -478,7 +478,7 @@ mod tests {
             messages: vec![
                 Message {
                     role: Role::User,
-                    content: "スキルを実行して".to_string(),
+                    content: "run the skill".to_string(),
                     timestamp: None,
                     tool_uses: vec![],
                 },
@@ -510,14 +510,14 @@ mod tests {
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].skill_name, "lonely-skill");
         assert!(!invocations[0].was_productive);
-        assert_eq!(invocations[0].trigger_context, Some("スキルを実行して".to_string()));
+        assert_eq!(invocations[0].trigger_context, Some("run the skill".to_string()));
     }
 
     #[test]
     fn test_trigger_context_truncated() {
         use crate::types::*;
         // Test that trigger_context is truncated at 200 chars
-        let long_message = "あ".repeat(300);
+        let long_message = "a".repeat(300);
         let conversations = vec![Conversation {
             id: "conv3".to_string(),
             source_path: PathBuf::from("test.jsonl"),

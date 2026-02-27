@@ -7,7 +7,7 @@ use crate::types::{DepType, DependencyGraph, GraphNode, RawRef, SkillDependency}
 ///
 /// Detects three kinds of references:
 /// - MarkdownLink: `[text](target.md)` or `[text](target)` (no extension)
-/// - SkillRef: backtick-quoted identifiers near skill keywords (スキル, skill, Skill)
+/// - SkillRef: backtick-quoted identifiers near skill keywords (skill, Skill)
 /// - ProjectPath: `~/project-name/` or Windows drive paths like `C:\Users\...\project\`
 pub fn extract_refs(content: &str) -> Vec<RawRef> {
     let mut refs = Vec::new();
@@ -91,14 +91,14 @@ fn extract_markdown_links(line: &str, line_num: usize, refs: &mut Vec<RawRef>) {
 
 /// Extract skill references: backtick-quoted identifiers near skill keywords.
 /// Patterns:
-///   - スキル `skill-name`
-///   - 詳細はスキル skill-name 参照
-///   - skill `name` / Skill `name`
+///   - skill `skill-name`
+///   - see skill skill-name
+///   - Skill `name`
 fn extract_skill_refs(line: &str, line_num: usize, refs: &mut Vec<RawRef>) {
     let lower = line.to_lowercase();
 
     // Find all occurrences of skill-related keywords
-    let keywords = ["スキル", "skill"];
+    let keywords = ["skill"];
 
     for keyword in &keywords {
         let search_line = if *keyword == "skill" { &lower } else { line };
@@ -126,7 +126,7 @@ fn extract_skill_refs(line: &str, line_num: usize, refs: &mut Vec<RawRef>) {
                     }
                 }
             } else {
-                // Also try bare word after keyword (e.g., "スキル skill-name 参照")
+                // Also try bare word after keyword (e.g., "skill skill-name reference")
                 // Take the next whitespace-delimited token, but require a hyphen
                 // to avoid false positives like "skill level" or "skill-miner is a tool"
                 let next_token = trimmed.split_whitespace().next().unwrap_or("");
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn test_extract_skill_ref() {
-        let content = "詳細はスキル `contactsheet-pairing` 参照\n";
+        let content = "See skill `contactsheet-pairing` for details\n";
         let refs = extract_refs(content);
         let skill_refs: Vec<_> = refs
             .iter()
@@ -508,7 +508,7 @@ mod tests {
 # My Skill
 
 See [details](accuracy-findings.md) for accuracy data.
-詳細はスキル `box-overlay` 参照
+See skill `box-overlay` for details
 Project at ~/tonsuu-checker/ for reference.
 ";
         let refs = extract_refs(content);
@@ -562,7 +562,7 @@ Project at ~/tonsuu-checker/ for reference.
         // Create memory file that references a skill
         fs::write(
             memory_dir.join("notes.md"),
-            "# Notes\n詳細はスキル `skill-a` 参照\n",
+            "# Notes\nSee skill `skill-a` for details\n",
         )
         .unwrap();
 
@@ -689,7 +689,7 @@ Project at ~/tonsuu-checker/ for reference.
         );
         contents.insert(
             PathBuf::from("/test/memory/notes.md"),
-            "# Notes\n詳細はスキル `skill-a` 参照\n".to_string(),
+            "# Notes\nSee skill `skill-a` for details\n".to_string(),
         );
         contents.insert(
             PathBuf::from("/test/memory/orphan.md"),

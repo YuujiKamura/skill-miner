@@ -47,10 +47,10 @@ pub fn build_description(cluster: &DomainCluster) -> String {
     let domain_keywords: Vec<&str> = domain_def.keywords.iter().map(|s| s.as_str()).collect();
 
     format!(
-        "{}。({}) {}と言われた時に使用。",
+        "{}. ({}) Use when user mentions: {}.",
         cluster.domain,
-        pattern_summaries.join("、"),
-        domain_keywords.join("、")
+        pattern_summaries.join(", "),
+        domain_keywords.join(", ")
     )
 }
 
@@ -58,7 +58,7 @@ pub fn build_body(cluster: &DomainCluster) -> String {
     let mut body = format!("# {}\n\n", cluster.domain);
 
     body.push_str(&format!(
-        "会話数: {} | パターン数: {}\n\n",
+        "Conversations: {} | Patterns: {}\n\n",
         cluster.conversations.len(),
         cluster.patterns.len()
     ));
@@ -82,7 +82,7 @@ fn render_pattern(
     body.push_str(&format!("{}\n\n", pattern.description));
 
     if !pattern.steps.is_empty() {
-        body.push_str("### 手順\n\n");
+        body.push_str("### Steps\n\n");
         for (j, step) in pattern.steps.iter().enumerate() {
             body.push_str(&format!("{}. {}\n", j + 1, step));
         }
@@ -90,9 +90,9 @@ fn render_pattern(
     }
 
     match (pattern.frequency > 1, score) {
-        (true, Some(s)) => body.push_str(&format!("出現頻度: {}回 | スコア: {:.2}\n\n", pattern.frequency, s)),
-        (true, None) => body.push_str(&format!("出現頻度: {}回\n\n", pattern.frequency)),
-        (false, Some(s)) => body.push_str(&format!("スコア: {:.2}\n\n", s)),
+        (true, Some(s)) => body.push_str(&format!("Frequency: {} | Score: {:.2}\n\n", pattern.frequency, s)),
+        (true, None) => body.push_str(&format!("Frequency: {}\n\n", pattern.frequency)),
+        (false, Some(s)) => body.push_str(&format!("Score: {:.2}\n\n", s)),
         (false, None) => body.push('\n'),
     }
 }
@@ -123,10 +123,10 @@ pub fn rebuild_description_scored(
     let domain_keywords: Vec<&str> = domain_def.keywords.iter().map(|s| s.as_str()).collect();
 
     format!(
-        "{}。({}) {}と言われた時に使用。",
+        "{}. ({}) Use when user mentions: {}.",
         cluster.domain,
-        pattern_summaries.join("、"),
-        domain_keywords.join("、")
+        pattern_summaries.join(", "),
+        domain_keywords.join(", ")
     )
 }
 
@@ -154,7 +154,7 @@ pub fn rebuild_body_scored(
     let mut body = format!("# {}\n\n", cluster.domain);
 
     body.push_str(&format!(
-        "会話数: {} | パターン数: {}\n\n",
+        "Conversations: {} | Patterns: {}\n\n",
         cluster.conversations.len(),
         filtered.len()
     ));
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn test_rebuild_description_scored() {
         let cluster = DomainCluster {
-            domain: "テスト".to_string(),
+            domain: "Testing & QA".to_string(),
             conversations: vec![],
             patterns: vec![
                 KnowledgePattern {
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn test_rebuild_body_scored() {
         let cluster = DomainCluster {
-            domain: "テスト".to_string(),
+            domain: "Testing & QA".to_string(),
             conversations: vec![],
             patterns: vec![
                 KnowledgePattern {
@@ -258,13 +258,13 @@ mod tests {
         let first_pos = body.find("First").unwrap();
         let second_pos = body.find("Second").unwrap();
         assert!(first_pos < second_pos);
-        assert!(body.contains("スコア: 0.90"));
+        assert!(body.contains("Score: 0.90"));
     }
 
     #[test]
     fn test_rebuild_description_scored_empty_fallback() {
         let cluster = DomainCluster {
-            domain: "テスト".to_string(),
+            domain: "Testing & QA".to_string(),
             conversations: vec![],
             patterns: vec![KnowledgePattern {
                 title: "Pattern".to_string(),

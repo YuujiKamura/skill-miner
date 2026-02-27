@@ -56,7 +56,7 @@ pub fn extract_patterns(
 
         if !exchanges.is_empty() {
             let mut header = format!(
-                "=== 会話 {} (id: {}) ===",
+                "=== Conversation {} (id: {}) ===",
                 i,
                 &conv.summary.id[..8.min(conv.summary.id.len())],
             );
@@ -172,8 +172,8 @@ struct PatternEntry {
     description: String,
     #[serde(default)]
     steps: Vec<String>,
-    /// Legacy: 旧プロンプトは frequency を返す。新プロンプトは discussed: true を返す。
-    /// どちらが来ても受け入れる。
+    /// Legacy: old prompt returns frequency. New prompt returns discussed: true.
+    /// Accept either format.
     #[serde(default = "default_freq")]
     frequency: usize,
     #[serde(default)]

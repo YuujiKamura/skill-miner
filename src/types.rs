@@ -6,19 +6,19 @@ use std::path::PathBuf;
 
 // ── Dependency graph types ──
 
-/// 依存関係の種別
+/// Dependency type
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DepType {
-    /// See [file](file) 形式のマークダウンリンク
+    /// Markdown link: [text](file.md)
     MarkdownLink,
-    /// `スキル名` 参照（バッククォート内）
+    /// Skill reference: backtick-quoted identifier near "skill" keyword
     SkillRef,
-    /// プロジェクトパス参照
+    /// Project path reference
     ProjectPath,
 }
 
-/// extract_refs が返す中間結果
+/// Intermediate result from extract_refs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawRef {
     pub target: String,
@@ -26,7 +26,7 @@ pub struct RawRef {
     pub line: usize,
 }
 
-/// 解決済みの依存関係
+/// Resolved dependency
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillDependency {
     pub from: String,
@@ -35,7 +35,7 @@ pub struct SkillDependency {
     pub line: usize,
 }
 
-/// グラフ内の1ノード（ファイル）
+/// A single node (file) in the graph
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
     pub path: String,
@@ -43,7 +43,7 @@ pub struct GraphNode {
     pub incoming: Vec<SkillDependency>,
 }
 
-/// 依存グラフ全体
+/// Full dependency graph
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyGraph {
     pub nodes: Vec<GraphNode>,
@@ -139,9 +139,9 @@ pub struct ConversationSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassifiedConversation {
     pub summary: ConversationSummary,
-    /// Primary domain tag (e.g., "舗装工事", "写真管理", "PDF操作")
+    /// Primary domain tag (e.g., "Web Development", "AI & Machine Learning")
     pub domain: String,
-    /// Stable English slug from domain master (e.g., "pavement", "photo-management")
+    /// Stable slug from domain master (e.g., "web-dev", "ai-ml")
     #[serde(default)]
     pub slug: String,
     /// Secondary tags
@@ -159,16 +159,16 @@ pub struct DomainCluster {
     pub patterns: Vec<KnowledgePattern>,
 }
 
-/// スキル発火の記録（chat historyから抽出）
+/// Skill invocation record (extracted from chat history)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillInvocation {
     pub skill_name: String,
     pub conversation_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
-    /// 発火後にtool_useが続いたか（有効利用された）
+    /// Whether tool_use followed the invocation (was productively used)
     pub was_productive: bool,
-    /// 発火直前のユーザーメッセージ（先頭200文字）
+    /// User message just before invocation (first 200 chars)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_context: Option<String>,
 }
@@ -266,10 +266,10 @@ pub struct Manifest {
     pub version: String,
     pub generated_at: DateTime<Utc>,
     pub entries: Vec<DraftEntry>,
-    /// 処理済み会話IDセット（漸増マイニングの重複排除用）
+    /// Set of processed conversation IDs (for incremental mining deduplication)
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub mined_ids: HashSet<String>,
-    /// 分類済みだが未extract（タイムアウト等で失敗したドメインの会話）
+    /// Classified but not yet extracted (domains that failed due to timeout, etc.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_extracts: Vec<ClassifiedConversation>,
 }

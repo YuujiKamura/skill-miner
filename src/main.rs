@@ -254,6 +254,16 @@ enum Command {
         #[arg(short, long)]
         dir: Option<PathBuf>,
     },
+
+    /// Show today's work timeline from history.jsonl
+    Today {
+        /// Filter by project path (substring match)
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Search display text (substring match, case-insensitive)
+        #[arg(short, long)]
+        search: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -342,6 +352,7 @@ fn main() -> Result<()> {
             refine,
             dir,
         } => cmd_consolidate(&config, names, all, days, min_score, dry_run, refine, dir),
+        Command::Today { project, search } => cmd_today(&config, project, search),
     }
 }
 
@@ -438,6 +449,72 @@ fn cmd_scan_fast(config: &MineConfig, days: u32, project: Option<String>) -> Res
 
     if projects.len() > 20 {
         println!("... and {} more projects", projects.len() - 20);
+    }
+
+    Ok(())
+}
+
+fn cmd_today(config: &MineConfig, project: Option<String>, search: Option<String>) -> Result<()> {
+    let entries = history::parse_history(&config.history_path)?;
+    let today_entries = history::filter_today(&entries);
+
+    // Apply project filter
+    let today_entries: Vec<_> = if let Some(ref proj) = project {
+        let proj_lower = proj.to_lowercase();
+        today_entries
+            .into_iter()
+            .filter(|e| e.project.to_lowercase().contains(&proj_lower))
+            .collect()
+    } else {
+        today_entries
+    };
+
+    // Apply search filter
+    let today_entries: Vec<_> = if let Some(ref query) = search {
+        let query_lower = query.to_lowercase();
+        today_entries
+            .into_iter()
+            .filter(|e| e.display.to_lowercase().contains(&query_lower))
+            .collect()
+    } else {
+        today_entries
+    };
+
+    // Count unique projects
+    let mut project_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for e in &today_entries {
+        if !e.project.is_empty() {
+            project_set.insert(&e.project);
+        }
+    }
+
+    let today_str = chrono::Local::now().format("%Y-%m-%d");
+    println!("=== Today's Activity ({}) ===", today_str);
+    println!("{} sessions | {} projects", today_entries.len(), project_set.len());
+    if let Some(ref proj) = project {
+        println!("Project filter: {}", proj);
+    }
+    if let Some(ref query) = search {
+        println!("Search: {}", query);
+    }
+    println!();
+
+    for entry in &today_entries {
+        // Format timestamp as HH:MM local time
+        let dt = chrono::DateTime::from_timestamp_millis(entry.timestamp as i64)
+            .unwrap_or_default()
+            .with_timezone(&chrono::Local);
+        let time_str = dt.format("%H:%M");
+
+        // Extract last path component for project name
+        let proj_name = entry
+            .project
+            .rsplit(|c| c == '\\' || c == '/')
+            .next()
+            .unwrap_or(&entry.project);
+
+        let display = util::truncate(&entry.display, 80);
+        println!("{}  [{}] {}", time_str, proj_name, display);
     }
 
     Ok(())
@@ -1302,9 +1379,9 @@ fn cmd_consolidate(
         }
     }
 
-    // === 発火診断 ===
+    // === Fire Diagnostics ===
     println!();
-    println!("=== 発火診断 ===");
+    println!("=== Fire Diagnostics ===");
     println!();
 
     // UNDER-TRIGGER: fire_count==0 && deployed > 14 days
@@ -1327,11 +1404,11 @@ fn cmd_consolidate(
         .collect();
 
     if !under_triggered.is_empty() {
-        println!("[UNDER-TRIGGER] 以下のスキルはデプロイ後14日以上発火ゼロ:");
+        println!("[UNDER-TRIGGER] The following skills have zero fires after 14+ days deployed:");
         for (slug, deployed_at, _days) in &under_triggered {
             println!("  {} (deployed {}, 0 fires)", slug, deployed_at.format("%Y-%m-%d"));
         }
-        println!("  → descriptionのトリガーフレーズ不足の可能性。--refine で改善を試行");
+        println!("  -> Possible insufficient trigger phrases in description. Try --refine");
         println!();
     }
 
@@ -1354,7 +1431,7 @@ fn cmd_consolidate(
         .collect();
 
     if !low_productive.is_empty() {
-        println!("[LOW-PRODUCTIVE] 以下のスキルは発火するが有効率が低い (< 50%):");
+        println!("[LOW-PRODUCTIVE] The following skills fire but have low productive rate (< 50%):");
         for (slug, fires, productive, rate) in &low_productive {
             println!(
                 "  {}: {} fires, {} productive ({:.0}%)",
@@ -1364,18 +1441,18 @@ fn cmd_consolidate(
                 rate * 100.0
             );
         }
-        println!("  → Over-triggeringの可能性。descriptionのスコープを狭めるべき");
+        println!("  -> Possible over-triggering. Consider narrowing description scope");
         println!();
     }
 
     if under_triggered.is_empty() && low_productive.is_empty() {
-        println!("問題なし。");
+        println!("No issues found.");
         println!();
     }
 
-    // === --refine: description研磨 ===
+    // === --refine: description refinement ===
     if refine {
-        eprintln!("=== Description研磨 ===\n");
+        eprintln!("=== Description Refinement ===\n");
 
         let refine_targets: Vec<_> = target_slugs
             .iter()
@@ -1386,7 +1463,7 @@ fn cmd_consolidate(
             .collect();
 
         if refine_targets.is_empty() {
-            eprintln!("研磨対象なし（trigger_contextを持つスキルがありません）");
+            eprintln!("No refinement targets (no skills with trigger_context)");
         } else {
             for slug in &refine_targets {
                 let contexts = match trigger_map.get(slug.as_str()) {
@@ -1400,7 +1477,7 @@ fn cmd_consolidate(
                     // Try skills_dir
                     let skill_path = config.skills_dir.join(format!("{}.md", slug));
                     if !skill_path.exists() {
-                        eprintln!("  {} — MDファイルが見つかりません、スキップ", slug);
+                        eprintln!("  {} -- MD file not found, skipping", slug);
                         continue;
                     }
                 }
@@ -1415,17 +1492,17 @@ fn cmd_consolidate(
                 let current_desc = util::extract_description_from_md(&content).unwrap_or_default();
 
                 if current_desc.is_empty() {
-                    eprintln!("  {} — descriptionが空、スキップ", slug);
+                    eprintln!("  {} -- description is empty, skipping", slug);
                     continue;
                 }
 
-                eprintln!("  {} — 研磨中... ({} trigger phrases)", slug, contexts.len());
+                eprintln!("  {} -- refining... ({} trigger phrases)", slug, contexts.len());
 
                 match refiner::refine_description(&current_desc, &contexts, slug, &config.ai_options)
                 {
                     Ok(new_desc) => {
                         if new_desc == current_desc {
-                            println!("  {} — 変更なし", slug);
+                            println!("  {} -- no changes", slug);
                         } else if dry_run {
                             println!("  {} — description diff:", slug);
                             println!("    OLD: {}", current_desc);
@@ -1435,13 +1512,13 @@ fn cmd_consolidate(
                             let new_content =
                                 util::replace_description_in_md(&content, &new_desc);
                             std::fs::write(&md_path, new_content)?;
-                            println!("  {} — description更新完了", slug);
+                            println!("  {} -- description updated", slug);
                             println!("    OLD: {}", current_desc);
                             println!("    NEW: {}", new_desc);
                         }
                     }
                     Err(e) => {
-                        eprintln!("  {} — 研磨失敗: {}", slug, e);
+                        eprintln!("  {} -- refinement failed: {}", slug, e);
                     }
                 }
             }

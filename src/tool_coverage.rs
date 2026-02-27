@@ -126,16 +126,16 @@ pub fn format_report(uncovered: &[DetectedProject]) -> String {
     }
 
     let mut report = String::from("\n=== Tool Coverage ===\n");
-    report.push_str("以下のプロジェクトはスキル未作成:\n");
+    report.push_str("Projects without skills:\n");
     for proj in uncovered {
         report.push_str(&format!(
-            "  {} ({}会話で使用) → {}\n",
+            "  {} ({} conversations) -> {}\n",
             proj.name,
             proj.conversation_count,
             proj.path.display()
         ));
     }
-    report.push_str("\"ツール棚卸し\" でスキル化を検討\n");
+    report.push_str("Consider creating skills for these projects\n");
     report
 }
 

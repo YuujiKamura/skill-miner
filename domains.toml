@@ -1,59 +1,39 @@
 [[domain]]
-name = "舗装工事"
-slug = "pavement"
-keywords = ["舗装", "温度管理", "出来形", "転圧", "切削", "アスファルト", "路盤", "品質管理"]
+name = "Web Development"
+slug = "web-dev"
+keywords = ["React", "Vue", "Next.js", "CSS", "HTML", "frontend", "backend", "API", "REST", "GraphQL"]
 
 [[domain]]
-name = "写真管理"
-slug = "photo-management"
-keywords = ["写真", "工事写真", "台帳", "タグ", "アルバム", "撮影"]
+name = "DevOps & Infrastructure"
+slug = "devops"
+keywords = ["Docker", "Kubernetes", "CI/CD", "deploy", "AWS", "GCP", "Azure", "terraform", "nginx"]
 
 [[domain]]
-name = "PDF操作"
-slug = "pdf"
-keywords = ["PDF", "pdf", "生成", "結合", "テンプレート", "書き込み"]
+name = "Database & Storage"
+slug = "database"
+keywords = ["SQL", "PostgreSQL", "MySQL", "Redis", "MongoDB", "migration", "query", "schema"]
 
 [[domain]]
-name = "施工体制"
-slug = "construction-admin"
-keywords = ["施工体制", "下請", "安全書類", "カルテ", "台帳", "契約"]
+name = "AI & Machine Learning"
+slug = "ai-ml"
+keywords = ["LLM", "GPT", "Claude", "Gemini", "prompt", "model", "training", "inference", "embedding"]
 
 [[domain]]
-name = "スプレッドシート"
-slug = "spreadsheet"
-keywords = ["スプレッドシート", "Excel", "Google Sheets", "数式", "xlsx"]
+name = "Testing & QA"
+slug = "testing"
+keywords = ["test", "unit test", "integration", "coverage", "mock", "assertion", "TDD", "fixture"]
 
 [[domain]]
-name = "Rust開発"
-slug = "rust-dev"
-keywords = ["Rust", "クレート", "cargo", "ビルド", "WASM", "derive"]
+name = "CLI & Tooling"
+slug = "cli-tooling"
+keywords = ["CLI", "script", "automation", "tool", "plugin", "extension", "config"]
 
 [[domain]]
-name = "AI連携"
-slug = "ai-integration"
-keywords = ["Gemini", "Claude", "API", "プロンプト", "精度", "モデル"]
+name = "Documentation"
+slug = "docs"
+keywords = ["README", "docs", "documentation", "tutorial", "guide", "comment"]
 
 [[domain]]
-name = "区画線"
-slug = "lane-marking"
-keywords = ["区画線", "数量計算", "レーン", "ライン"]
-
-[[domain]]
-name = "DXF/CAD"
-slug = "dxf-cad"
-keywords = ["DXF", "CAD", "横断図", "図面"]
-
-[[domain]]
-name = "工程管理"
-slug = "schedule"
-keywords = ["工程", "週報", "スケジュール", "工程表"]
-
-[[domain]]
-name = "ツール設計"
-slug = "tool-design"
-keywords = ["CLI", "スキル", "自動化", "ツール設計"]
-
-[[domain]]
-name = "その他"
+name = "Miscellaneous"
 slug = "misc"
 keywords = []

@@ -1,9 +1,8 @@
-以下はClaude Codeのチャット会話の一覧である。各会話を以下の分野リストから最も適切なものに分類せよ。
-リスト外の分野名を使うな。必ず以下のいずれかを選べ:
+Below is a list of Claude Code chat conversations. Classify each conversation into the most appropriate domain from the following list. Do NOT use domain names outside this list.
 
 {domain_list}
 
-JSON配列で返せ。各要素: {{"index": 0, "domain": "分野名", "tags": ["tag1"], "confidence": 0.9}}
+Return a JSON array. Each element: {{"index": 0, "domain": "Domain Name", "tags": ["tag1"], "confidence": 0.9}}
 
-会話一覧:
+Conversations:
 {formatted_text}

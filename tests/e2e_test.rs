@@ -1,5 +1,5 @@
-//! End-to-end integration test: JSONL → parse → compress → format_for_classification
-//! and fixture-based classify/extract → generate → SkillDraft format verification.
+//! End-to-end integration test: JSONL -> parse -> compress -> format_for_classification
+//! and fixture-based classify/extract -> generate -> SkillDraft format verification.
 //! No AI calls are made; classification and extraction results are loaded from fixtures.
 
 use skill_miner::classifier;
@@ -19,7 +19,7 @@ fn fixture_path() -> PathBuf {
     fixture_dir().join("sample_conversation.jsonl")
 }
 
-// --- Pipeline: parse → compress → format_for_classification ---
+// --- Pipeline: parse -> compress -> format_for_classification ---
 
 #[test]
 fn e2e_parse_compress_format() {
@@ -47,7 +47,7 @@ fn e2e_parse_compress_format() {
     assert!(formatted.contains("msgs="), "should contain message count");
 }
 
-// --- Fixture-based classify → group → extract → generate ---
+// --- Fixture-based classify -> group -> extract -> generate ---
 
 fn make_summary(id: &str, first_msg: &str) -> ConversationSummary {
     ConversationSummary {
@@ -83,9 +83,9 @@ fn e2e_fixture_classify_to_generate() {
 
     // Build summaries for each classified entry
     let summaries: Vec<ConversationSummary> = vec![
-        make_summary("conv001", "cargo checkでビルドエラーを修正して"),
-        make_summary("conv002", "Geminiプロンプトを最適化して"),
-        make_summary("conv003", "PDFの結合処理を実装して"),
+        make_summary("conv001", "Fix the build error with cargo check"),
+        make_summary("conv002", "Set up React frontend with Next.js"),
+        make_summary("conv003", "Optimize PostgreSQL query performance"),
     ];
 
     // Simulate classification results by combining entries with summaries
@@ -128,15 +128,15 @@ fn e2e_fixture_classify_to_generate() {
     assert_eq!(patterns.len(), 2);
 
     // Build DomainCluster from fixture data
-    let rust_convs: Vec<ClassifiedConversation> = classified
+    let web_convs: Vec<ClassifiedConversation> = classified
         .iter()
-        .filter(|c| c.domain == "Rust開発")
+        .filter(|c| c.domain == "Web Development")
         .cloned()
         .collect();
 
     let cluster = DomainCluster {
-        domain: "Rust開発".to_string(),
-        conversations: rust_convs,
+        domain: "Web Development".to_string(),
+        conversations: web_convs,
         patterns: patterns
             .into_iter()
             .map(|p| KnowledgePattern {
@@ -154,7 +154,7 @@ fn e2e_fixture_classify_to_generate() {
     assert_eq!(drafts.len(), 1, "should generate exactly one skill draft");
 
     let draft = &drafts[0];
-    assert_eq!(draft.name, "rust-dev", "slug should be rust-dev");
+    assert_eq!(draft.name, "web-dev", "slug should be web-dev");
     assert!(
         !draft.description.is_empty(),
         "description should not be empty"
@@ -164,7 +164,7 @@ fn e2e_fixture_classify_to_generate() {
         "body should not be empty"
     );
     assert!(
-        draft.body.contains("# Rust開発"),
+        draft.body.contains("# Web Development"),
         "body should contain domain heading"
     );
     assert!(
@@ -175,7 +175,7 @@ fn e2e_fixture_classify_to_generate() {
     // Format as markdown and verify structure
     let md = generator::format_skill_md(draft);
     assert!(md.starts_with("---\n"), "should start with YAML frontmatter");
-    assert!(md.contains("name: rust-dev"), "should contain name field");
+    assert!(md.contains("name: web-dev"), "should contain name field");
     assert!(
         md.contains("description: \""),
         "should contain quoted description"
@@ -191,7 +191,7 @@ fn e2e_fixture_classify_to_generate() {
 #[test]
 fn e2e_empty_patterns_no_drafts() {
     let cluster = DomainCluster {
-        domain: "AI連携".to_string(),
+        domain: "AI & Machine Learning".to_string(),
         conversations: vec![],
         patterns: vec![],
     };
@@ -205,23 +205,23 @@ fn e2e_empty_patterns_no_drafts() {
 #[test]
 fn e2e_multiple_clusters_generate_multiple_drafts() {
     let cluster1 = DomainCluster {
-        domain: "Rust開発".to_string(),
+        domain: "Web Development".to_string(),
         conversations: vec![],
         patterns: vec![KnowledgePattern {
-            title: "パターンA".to_string(),
-            description: "説明A".to_string(),
+            title: "Pattern A".to_string(),
+            description: "Description A".to_string(),
             steps: vec![],
             source_ids: vec!["id1".to_string()],
             frequency: 2,
         }],
     };
     let cluster2 = DomainCluster {
-        domain: "PDF操作".to_string(),
+        domain: "Database & Storage".to_string(),
         conversations: vec![],
         patterns: vec![KnowledgePattern {
-            title: "パターンB".to_string(),
-            description: "説明B".to_string(),
-            steps: vec!["手順1".to_string()],
+            title: "Pattern B".to_string(),
+            description: "Description B".to_string(),
+            steps: vec!["Step 1".to_string()],
             source_ids: vec!["id2".to_string()],
             frequency: 1,
         }],
@@ -231,22 +231,22 @@ fn e2e_multiple_clusters_generate_multiple_drafts() {
     assert_eq!(drafts.len(), 2);
 
     let slugs: Vec<&str> = drafts.iter().map(|d| d.name.as_str()).collect();
-    assert!(slugs.contains(&"rust-dev"), "should have rust-dev slug");
-    assert!(slugs.contains(&"pdf"), "should have pdf slug");
+    assert!(slugs.contains(&"web-dev"), "should have web-dev slug");
+    assert!(slugs.contains(&"database"), "should have database slug");
 }
 
 #[test]
 fn e2e_skill_draft_format_contains_steps() {
     let cluster = DomainCluster {
-        domain: "Rust開発".to_string(),
+        domain: "Web Development".to_string(),
         conversations: vec![],
         patterns: vec![KnowledgePattern {
-            title: "ビルド確認".to_string(),
-            description: "cargo checkで確認".to_string(),
+            title: "Build verification".to_string(),
+            description: "Verify with cargo check".to_string(),
             steps: vec![
-                "コードを変更".to_string(),
-                "cargo checkを実行".to_string(),
-                "エラーを修正".to_string(),
+                "Make code changes".to_string(),
+                "Run cargo check".to_string(),
+                "Fix errors".to_string(),
             ],
             source_ids: vec!["s1".to_string()],
             frequency: 5,
@@ -256,11 +256,11 @@ fn e2e_skill_draft_format_contains_steps() {
     let drafts = generator::generate_skills(&[cluster]);
     let body = &drafts[0].body;
 
-    assert!(body.contains("### 手順"), "body should contain steps header");
-    assert!(body.contains("1. コードを変更"), "step 1 should be numbered");
+    assert!(body.contains("### Steps"), "body should contain steps header");
+    assert!(body.contains("1. Make code changes"), "step 1 should be numbered");
     assert!(
-        body.contains("2. cargo checkを実行"),
+        body.contains("2. Run cargo check"),
         "step 2 should be numbered"
     );
-    assert!(body.contains("出現頻度: 5回"), "frequency should be shown");
+    assert!(body.contains("Frequency: 5"), "frequency should be shown");
 }

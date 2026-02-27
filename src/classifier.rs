@@ -130,53 +130,53 @@ mod tests {
 
     #[test]
     fn group_by_domain_single() {
-        let classified = vec![make_classified("conv1", "Rust開発")];
+        let classified = vec![make_classified("conv1", "CLI & Tooling")];
         let groups = group_by_domain(&classified);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups["Rust開発"].len(), 1);
-        assert_eq!(groups["Rust開発"][0].summary.id, "conv1");
+        assert_eq!(groups["CLI & Tooling"].len(), 1);
+        assert_eq!(groups["CLI & Tooling"][0].summary.id, "conv1");
     }
 
     #[test]
     fn group_by_domain_multiple_domains() {
         let classified = vec![
-            make_classified("conv1", "Rust開発"),
-            make_classified("conv2", "AI連携"),
-            make_classified("conv3", "Rust開発"),
-            make_classified("conv4", "PDF操作"),
-            make_classified("conv5", "AI連携"),
+            make_classified("conv1", "CLI & Tooling"),
+            make_classified("conv2", "AI & Machine Learning"),
+            make_classified("conv3", "CLI & Tooling"),
+            make_classified("conv4", "Database & Storage"),
+            make_classified("conv5", "AI & Machine Learning"),
         ];
         let groups = group_by_domain(&classified);
         assert_eq!(groups.len(), 3);
-        assert_eq!(groups["Rust開発"].len(), 2);
-        assert_eq!(groups["AI連携"].len(), 2);
-        assert_eq!(groups["PDF操作"].len(), 1);
+        assert_eq!(groups["CLI & Tooling"].len(), 2);
+        assert_eq!(groups["AI & Machine Learning"].len(), 2);
+        assert_eq!(groups["Database & Storage"].len(), 1);
     }
 
     #[test]
     fn group_by_domain_all_same() {
         let classified = vec![
-            make_classified("c1", "その他"),
-            make_classified("c2", "その他"),
+            make_classified("c1", "Miscellaneous"),
+            make_classified("c2", "Miscellaneous"),
         ];
         let groups = group_by_domain(&classified);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups["その他"].len(), 2);
+        assert_eq!(groups["Miscellaneous"].len(), 2);
     }
 
     #[test]
     fn classification_entry_deserialize_defaults() {
-        let json = r#"{"index": 0, "domain": "Rust開発"}"#;
+        let json = r#"{"index": 0, "domain": "CLI & Tooling"}"#;
         let entry: ClassificationEntry = serde_json::from_str(json).unwrap();
         assert_eq!(entry.index, 0);
-        assert_eq!(entry.domain, "Rust開発");
+        assert_eq!(entry.domain, "CLI & Tooling");
         assert!(entry.tags.is_empty());
         assert!((entry.confidence - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
     fn classification_entry_deserialize_full() {
-        let json = r#"{"index": 2, "domain": "PDF操作", "tags": ["gen", "merge"], "confidence": 0.88}"#;
+        let json = r#"{"index": 2, "domain": "Database & Storage", "tags": ["gen", "merge"], "confidence": 0.88}"#;
         let entry: ClassificationEntry = serde_json::from_str(json).unwrap();
         assert_eq!(entry.index, 2);
         assert_eq!(entry.tags, vec!["gen", "merge"]);

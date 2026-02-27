@@ -4,23 +4,23 @@ use std::path::Path;
 
 fn make_test_cluster() -> DomainCluster {
     DomainCluster {
-        domain: "Rust開発".to_string(),
+        domain: "Web Development".to_string(),
         conversations: vec![],
         patterns: vec![
             KnowledgePattern {
-                title: "cargo checkでビルド確認".to_string(),
-                description: "変更後にcargo checkで型エラーがないか確認する".to_string(),
+                title: "Build verification with cargo check".to_string(),
+                description: "Run cargo check after changes to catch type errors".to_string(),
                 steps: vec![
-                    "コードを変更する".to_string(),
-                    "cargo checkを実行する".to_string(),
-                    "エラーがあれば修正する".to_string(),
+                    "Make code changes".to_string(),
+                    "Run cargo check".to_string(),
+                    "Fix any errors".to_string(),
                 ],
                 source_ids: vec!["abc12345".to_string(), "def67890".to_string()],
                 frequency: 5,
             },
             KnowledgePattern {
-                title: "テスト駆動開発".to_string(),
-                description: "テストを先に書いてから実装する".to_string(),
+                title: "Test-driven development".to_string(),
+                description: "Write tests before implementation".to_string(),
                 steps: vec![],
                 source_ids: vec!["abc12345".to_string()],
                 frequency: 3,
@@ -31,9 +31,9 @@ fn make_test_cluster() -> DomainCluster {
 
 fn make_test_draft() -> SkillDraft {
     SkillDraft {
-        name: "rust-dev".to_string(),
-        description: "Rust開発。(cargo checkでビルド確認、テスト駆動開発) cargo checkでビルド確認、テスト駆動開発と言われた時に使用。".to_string(),
-        body: "# Rust開発\n\nSample body.".to_string(),
+        name: "web-dev".to_string(),
+        description: "Web Development. (Build verification, TDD) Use when user mentions: React, Vue.".to_string(),
+        body: "# Web Development\n\nSample body.".to_string(),
         sources: vec!["abc12345".to_string()],
         existing_skill: None,
         diff: None,
@@ -46,7 +46,7 @@ fn format_skill_md_has_yaml_frontmatter() {
     let md = generator::format_skill_md(&draft);
 
     assert!(md.starts_with("---\n"), "Should start with YAML frontmatter delimiter");
-    assert!(md.contains("name: rust-dev"), "Should contain name field");
+    assert!(md.contains("name: web-dev"), "Should contain name field");
     assert!(md.contains("description: \""), "Should contain description field");
     // Frontmatter should be closed
     let parts: Vec<&str> = md.splitn(3, "---").collect();
@@ -70,7 +70,7 @@ fn format_skill_md_contains_body() {
     let draft = make_test_draft();
     let md = generator::format_skill_md(&draft);
     assert!(
-        md.contains("# Rust開発"),
+        md.contains("# Web Development"),
         "Should contain body content"
     );
 }
@@ -80,13 +80,13 @@ fn generate_skills_from_cluster() {
     let cluster = make_test_cluster();
     let drafts = generator::generate_skills(&[cluster]);
     assert_eq!(drafts.len(), 1);
-    assert_eq!(drafts[0].name, "rust-dev");
+    assert_eq!(drafts[0].name, "web-dev");
 }
 
 #[test]
 fn generate_skills_empty_patterns() {
     let cluster = DomainCluster {
-        domain: "Rust開発".to_string(),
+        domain: "Web Development".to_string(),
         conversations: vec![],
         patterns: vec![],
     };
@@ -112,7 +112,7 @@ fn check_existing_skills_finds_match() {
     // Create a temp dir with a matching skill file
     let temp_dir = std::env::temp_dir().join("skill-miner-test-skills");
     let _ = std::fs::create_dir_all(&temp_dir);
-    let skill_file = temp_dir.join("rust-dev.md");
+    let skill_file = temp_dir.join("web-dev.md");
     std::fs::write(&skill_file, "# Existing skill").unwrap();
 
     let cluster = make_test_cluster();

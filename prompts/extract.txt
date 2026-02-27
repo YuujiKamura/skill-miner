@@ -1,32 +1,31 @@
-以下は「{domain}」分野のClaude Code会話群から抽出した要約である。
-各会話にはfiles(操作されたファイルパス)とcmds(実行されたコマンド)のメタデータが含まれる。
+Below are summaries from Claude Code conversations in the "{domain}" domain.
+Each conversation includes files (file paths operated on) and cmds (commands executed) metadata.
 
-**この分野でのみ必要とされるドメイン固有の知識**を抽出せよ。
-具体的には: この分野の経験者だけが知っている判断基準、設計上の落とし穴、ドメイン特有のワークフロー。
+Extract **domain-specific knowledge** that is unique to this domain.
+Specifically: decision criteria only experienced practitioners would know, design pitfalls, domain-specific workflows.
 
-除外すべきもの（ドメイン固有ではない）:
-- サブLLMによるコード検証ループ（claude -p で別AIを呼んで差分検証する手順）
-- cargo build / cargo test / cargo check などのビルド・テストサイクル
-- git status / git diff / git commit などのバージョン管理操作
-- ファイル読み込み→編集→保存の汎用的なコード開発手順
-- 「検証結果だけ返せ」のようなCLAUDE.md由来の運用指示
+Exclude (NOT domain-specific):
+- Generic code review or verification loops
+- Build/test cycles (cargo build, npm test, etc.)
+- Version control operations (git status, git commit, etc.)
+- Generic file read→edit→save development workflows
 
-制約:
-- 最大5パターンまで。
-- 抽出基準は「回数」ではなく「そのトピックについてユーザーとの対話（やり取り）があったかどうか」。
-  - ユーザーがAIの出力を訂正した（「〜だぞ」「違う」「〜じゃない」等）
-  - ユーザーがAIに判断基準を教えた（「和暦だぞ」「期限は1年後だ」等）
-  - 同じトピックでユーザーとAIが複数ターン往復した
-  これらは1回の会話でも重要なパターンとして抽出せよ。
-- 汎用的な開発手順をドメイン知識と混同するな。「cargo buildで検証」はどの分野でもやること。
+Constraints:
+- Maximum 5 patterns.
+- Extraction criteria: whether the topic was actively discussed between user and AI.
+  - User corrected AI output
+  - User taught AI a domain-specific judgment criterion
+  - Multiple back-and-forth turns on the same topic
+  These are important patterns even from a single conversation.
+- Do NOT confuse generic development steps with domain knowledge.
 
-JSON配列で返せ。各要素:
+Return a JSON array. Each element:
 {{
-  "title": "パターン名",
-  "description": "何をするパターンか（なぜこの分野で重要なのか含む）",
-  "steps": ["手順1", "手順2"],
+  "title": "Pattern name",
+  "description": "What this pattern does and why it matters in this domain",
+  "steps": ["Step 1", "Step 2"],
   "discussed": true
 }}
 
-会話データ:
+Conversation data:
 {context}

@@ -1,4 +1,5 @@
 use crate::error::SkillMinerError;
+use chrono::Local;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -85,6 +86,24 @@ pub fn filter_by_days(entries: &[HistoryEntry], days_back: u32) -> Vec<&HistoryE
         .collect()
 }
 
+/// Filter entries from today (since midnight local time), sorted by timestamp ascending
+pub fn filter_today(entries: &[HistoryEntry]) -> Vec<&HistoryEntry> {
+    let today_midnight = Local::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_local_timezone(Local)
+        .unwrap();
+    let midnight_ms = today_midnight.timestamp_millis() as u64;
+
+    let mut result: Vec<&HistoryEntry> = entries
+        .iter()
+        .filter(|e| e.timestamp >= midnight_ms)
+        .collect();
+    result.sort_by_key(|e| e.timestamp);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +160,68 @@ mod tests {
         let entries = sample_entries();
         let filtered = filter_by_days(&entries, 0);
         assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn test_filter_today_includes_recent() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let entries = vec![HistoryEntry {
+            display: "recent".to_string(),
+            timestamp: now_ms - 1_000, // 1 second ago
+            project: "test".to_string(),
+        }];
+        let filtered = filter_today(&entries);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].display, "recent");
+    }
+
+    #[test]
+    fn test_filter_today_excludes_yesterday() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let entries = vec![HistoryEntry {
+            display: "old".to_string(),
+            timestamp: now_ms - 86_400_000 * 2, // 2 days ago
+            project: "test".to_string(),
+        }];
+        let filtered = filter_today(&entries);
+        assert_eq!(filtered.len(), 0);
+    }
+
+    #[test]
+    fn test_filter_today_sorted_ascending() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let entries = vec![
+            HistoryEntry {
+                display: "a".to_string(),
+                timestamp: now_ms - 3_000,
+                project: "test".to_string(),
+            },
+            HistoryEntry {
+                display: "b".to_string(),
+                timestamp: now_ms - 1_000,
+                project: "test".to_string(),
+            },
+            HistoryEntry {
+                display: "c".to_string(),
+                timestamp: now_ms - 2_000,
+                project: "test".to_string(),
+            },
+        ];
+        let filtered = filter_today(&entries);
+        assert_eq!(filtered.len(), 3);
+        assert!(filtered[0].timestamp <= filtered[1].timestamp);
+        assert!(filtered[1].timestamp <= filtered[2].timestamp);
+        assert_eq!(filtered[0].display, "a"); // oldest first
+        assert_eq!(filtered[1].display, "c");
+        assert_eq!(filtered[2].display, "b"); // newest last
     }
 }

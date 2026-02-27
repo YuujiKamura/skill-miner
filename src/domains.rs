@@ -1,8 +1,10 @@
 /// Fixed domain master for stable classification.
 /// AI picks from this list instead of free-text, ensuring consistent slugs.
 ///
-/// Domains are loaded from `domains.toml` (embedded at compile time).
-/// Falls back to a static array if parsing fails.
+/// Domains are loaded in this priority:
+/// 1. Runtime config: `~/.config/skill-miner/domains.toml`
+/// 2. Embedded `domains.toml` (compile-time)
+/// 3. Built-in static array (fallback)
 
 use serde::Deserialize;
 use std::sync::LazyLock;
@@ -25,8 +27,20 @@ struct DomainsFile {
 const DOMAINS_TOML: &str = include_str!("../domains.toml");
 
 /// Parsed domain list, lazily initialized.
-/// Falls back to built-in defaults if TOML parsing fails.
+/// Tries runtime config first, then embedded TOML, then built-in defaults.
 static DOMAIN_LIST: LazyLock<Vec<DomainDef>> = LazyLock::new(|| {
+    // 1. Try runtime config file
+    if let Some(config_path) = runtime_config_path() {
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            match toml::from_str::<DomainsFile>(&content) {
+                Ok(file) if !file.domain.is_empty() => return file.domain,
+                Ok(_) => eprintln!("warn: runtime domains.toml is empty, falling back"),
+                Err(e) => eprintln!("warn: failed to parse runtime domains.toml: {e}"),
+            }
+        }
+    }
+
+    // 2. Embedded compile-time TOML
     match toml::from_str::<DomainsFile>(DOMAINS_TOML) {
         Ok(file) => file.domain,
         Err(e) => {
@@ -35,6 +49,11 @@ static DOMAIN_LIST: LazyLock<Vec<DomainDef>> = LazyLock::new(|| {
         }
     }
 });
+
+/// Return the path to the runtime config file, if the directory exists.
+fn runtime_config_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("skill-miner").join("domains.toml"))
+}
 
 /// Access the domain list (static lifetime via LazyLock).
 pub fn domains() -> &'static [DomainDef] {
@@ -51,7 +70,7 @@ pub fn find_by_name(name: &str) -> Option<&'static DomainDef> {
 }
 
 /// Normalize a free-text domain name to the closest master entry.
-/// Tries exact match first, then substring/keyword match, falls back to "その他".
+/// Tries exact match first, then substring/keyword match, falls back to "Miscellaneous".
 pub fn normalize(raw: &str) -> &'static DomainDef {
     let raw_trimmed = raw.trim();
     let list = domains();
@@ -70,7 +89,7 @@ pub fn normalize(raw: &str) -> &'static DomainDef {
     // Require at least 2 chars for the "raw contained in master name" direction
     // to avoid false positives with very short strings
     for d in list.iter() {
-        if d.name == "その他" {
+        if d.slug == "misc" {
             continue;
         }
         if raw_trimmed.contains(d.name.as_str())
@@ -80,16 +99,17 @@ pub fn normalize(raw: &str) -> &'static DomainDef {
         }
     }
 
-    // Keyword match: check if any keyword appears in the raw domain text
+    // Keyword match: check if any keyword appears in the raw domain text (case-insensitive)
+    let raw_lower = raw_trimmed.to_lowercase();
     let mut best: Option<(&DomainDef, usize)> = None;
     for d in list.iter() {
-        if d.name == "その他" {
+        if d.slug == "misc" {
             continue;
         }
         let hits = d
             .keywords
             .iter()
-            .filter(|kw| raw_trimmed.contains(kw.as_str()))
+            .filter(|kw| raw_lower.contains(&kw.to_lowercase()))
             .count();
         if hits > 0 {
             if best.map_or(true, |(_, prev)| hits > prev) {
@@ -113,139 +133,118 @@ pub fn prompt_domain_list() -> String {
     let mut lines = Vec::new();
     for d in domains().iter() {
         if !d.keywords.is_empty() {
-            lines.push(format!("- {}: {}", d.name, d.keywords.join("、")));
+            lines.push(format!("- {}: {}", d.name, d.keywords.join(", ")));
         } else {
-            lines.push(format!("- {}: 上記に当てはまらないもの", d.name));
+            lines.push(format!("- {}: Anything not matching the above", d.name));
         }
     }
     lines.join("\n")
 }
 
-/// Built-in fallback domain list (matches the original static DOMAINS).
+/// Built-in fallback domain list.
 fn builtin_domains() -> Vec<DomainDef> {
     vec![
         DomainDef {
-            name: "舗装工事".into(),
-            slug: "pavement".into(),
+            name: "Web Development".into(),
+            slug: "web-dev".into(),
             keywords: vec![
-                "舗装".into(),
-                "温度管理".into(),
-                "出来形".into(),
-                "転圧".into(),
-                "切削".into(),
-                "アスファルト".into(),
-                "路盤".into(),
-                "品質管理".into(),
-            ],
-        },
-        DomainDef {
-            name: "写真管理".into(),
-            slug: "photo-management".into(),
-            keywords: vec![
-                "写真".into(),
-                "工事写真".into(),
-                "台帳".into(),
-                "タグ".into(),
-                "アルバム".into(),
-                "撮影".into(),
-            ],
-        },
-        DomainDef {
-            name: "PDF操作".into(),
-            slug: "pdf".into(),
-            keywords: vec![
-                "PDF".into(),
-                "pdf".into(),
-                "生成".into(),
-                "結合".into(),
-                "テンプレート".into(),
-                "書き込み".into(),
-            ],
-        },
-        DomainDef {
-            name: "施工体制".into(),
-            slug: "construction-admin".into(),
-            keywords: vec![
-                "施工体制".into(),
-                "下請".into(),
-                "安全書類".into(),
-                "カルテ".into(),
-                "台帳".into(),
-                "契約".into(),
-            ],
-        },
-        DomainDef {
-            name: "スプレッドシート".into(),
-            slug: "spreadsheet".into(),
-            keywords: vec![
-                "スプレッドシート".into(),
-                "Excel".into(),
-                "Google Sheets".into(),
-                "数式".into(),
-                "xlsx".into(),
-            ],
-        },
-        DomainDef {
-            name: "Rust開発".into(),
-            slug: "rust-dev".into(),
-            keywords: vec![
-                "Rust".into(),
-                "クレート".into(),
-                "cargo".into(),
-                "ビルド".into(),
-                "WASM".into(),
-                "derive".into(),
-            ],
-        },
-        DomainDef {
-            name: "AI連携".into(),
-            slug: "ai-integration".into(),
-            keywords: vec![
-                "Gemini".into(),
-                "Claude".into(),
+                "React".into(),
+                "Vue".into(),
+                "Next.js".into(),
+                "CSS".into(),
+                "HTML".into(),
+                "frontend".into(),
+                "backend".into(),
                 "API".into(),
-                "プロンプト".into(),
-                "精度".into(),
-                "モデル".into(),
+                "REST".into(),
+                "GraphQL".into(),
             ],
         },
         DomainDef {
-            name: "区画線".into(),
-            slug: "lane-marking".into(),
+            name: "DevOps & Infrastructure".into(),
+            slug: "devops".into(),
             keywords: vec![
-                "区画線".into(),
-                "数量計算".into(),
-                "レーン".into(),
-                "ライン".into(),
+                "Docker".into(),
+                "Kubernetes".into(),
+                "CI/CD".into(),
+                "deploy".into(),
+                "AWS".into(),
+                "GCP".into(),
+                "Azure".into(),
+                "terraform".into(),
+                "nginx".into(),
             ],
         },
         DomainDef {
-            name: "DXF/CAD".into(),
-            slug: "dxf-cad".into(),
-            keywords: vec!["DXF".into(), "CAD".into(), "横断図".into(), "図面".into()],
-        },
-        DomainDef {
-            name: "工程管理".into(),
-            slug: "schedule".into(),
+            name: "Database & Storage".into(),
+            slug: "database".into(),
             keywords: vec![
-                "工程".into(),
-                "週報".into(),
-                "スケジュール".into(),
-                "工程表".into(),
+                "SQL".into(),
+                "PostgreSQL".into(),
+                "MySQL".into(),
+                "Redis".into(),
+                "MongoDB".into(),
+                "migration".into(),
+                "query".into(),
+                "schema".into(),
             ],
         },
         DomainDef {
-            name: "ツール設計".into(),
-            slug: "tool-design".into(),
+            name: "AI & Machine Learning".into(),
+            slug: "ai-ml".into(),
+            keywords: vec![
+                "LLM".into(),
+                "GPT".into(),
+                "Claude".into(),
+                "Gemini".into(),
+                "prompt".into(),
+                "model".into(),
+                "training".into(),
+                "inference".into(),
+                "embedding".into(),
+            ],
+        },
+        DomainDef {
+            name: "Testing & QA".into(),
+            slug: "testing".into(),
+            keywords: vec![
+                "test".into(),
+                "unit test".into(),
+                "integration".into(),
+                "coverage".into(),
+                "mock".into(),
+                "assertion".into(),
+                "TDD".into(),
+                "fixture".into(),
+            ],
+        },
+        DomainDef {
+            name: "CLI & Tooling".into(),
+            slug: "cli-tooling".into(),
             keywords: vec![
                 "CLI".into(),
-                "スキル".into(),
-                "自動化".into(),
-                "ツール設計".into(),
+                "script".into(),
+                "automation".into(),
+                "tool".into(),
+                "plugin".into(),
+                "extension".into(),
+                "config".into(),
             ],
         },
         DomainDef {
-            name: "その他".into(),
+            name: "Documentation".into(),
+            slug: "docs".into(),
+            keywords: vec![
+                "README".into(),
+                "docs".into(),
+                "documentation".into(),
+                "tutorial".into(),
+                "guide".into(),
+                "comment".into(),
+            ],
+        },
+        DomainDef {
+            name: "Miscellaneous".into(),
             slug: "misc".into(),
             keywords: vec![],
         },
@@ -260,44 +259,44 @@ mod tests {
     fn toml_parses_successfully() {
         let file: DomainsFile = toml::from_str(DOMAINS_TOML).expect("domains.toml should parse");
         assert!(!file.domain.is_empty());
-        assert!(file.domain.iter().any(|d| d.slug == "pavement"));
+        assert!(file.domain.iter().any(|d| d.slug == "web-dev"));
         assert!(file.domain.iter().any(|d| d.slug == "misc"));
     }
 
     #[test]
     fn domains_loaded() {
         let list = domains();
-        assert!(list.len() >= 10);
-        assert!(list.iter().any(|d| d.slug == "pavement"));
+        assert!(list.len() >= 6);
+        assert!(list.iter().any(|d| d.slug == "web-dev"));
     }
 
     #[test]
     fn exact_match() {
-        let d = normalize("舗装工事");
-        assert_eq!(d.slug, "pavement");
+        let d = normalize("Web Development");
+        assert_eq!(d.slug, "web-dev");
     }
 
     #[test]
     fn substring_match() {
-        let d = normalize("舗装工事関連");
-        assert_eq!(d.slug, "pavement");
+        let d = normalize("Web Development projects");
+        assert_eq!(d.slug, "web-dev");
     }
 
     #[test]
     fn keyword_match() {
-        let d = normalize("温度管理と転圧");
-        assert_eq!(d.slug, "pavement");
+        let d = normalize("React and Vue frontend");
+        assert_eq!(d.slug, "web-dev");
     }
 
     #[test]
     fn keyword_match_ai() {
-        let d = normalize("Geminiプロンプト設計");
-        assert_eq!(d.slug, "ai-integration");
+        let d = normalize("LLM prompt engineering");
+        assert_eq!(d.slug, "ai-ml");
     }
 
     #[test]
     fn fallback_to_misc() {
-        let d = normalize("全く関係ない話題");
+        let d = normalize("something completely unrelated xyz");
         assert_eq!(d.slug, "misc");
     }
 

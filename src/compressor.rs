@@ -95,34 +95,37 @@ fn extract_topics(conv: &Conversation) -> Vec<String> {
 
     // Extract project-related keywords
     let keywords = [
-        ("舗装", "pavement"),
-        ("写真", "photo"),
+        ("React", "react"),
+        ("Vue", "vue"),
+        ("Next.js", "nextjs"),
+        ("CSS", "css"),
+        ("HTML", "html"),
+        ("Docker", "docker"),
+        ("Kubernetes", "kubernetes"),
+        ("AWS", "aws"),
+        ("SQL", "sql"),
+        ("PostgreSQL", "postgresql"),
+        ("Redis", "redis"),
+        ("MongoDB", "mongodb"),
+        ("LLM", "llm"),
+        ("GPT", "gpt"),
+        ("Claude", "claude"),
+        ("Gemini", "gemini"),
         ("PDF", "pdf"),
-        ("施工", "construction"),
-        ("スプレッド", "spreadsheet"),
         ("Excel", "excel"),
         ("Rust", "rust"),
         ("WASM", "wasm"),
         ("Git", "git"),
-        ("テスト", "test"),
-        ("区画線", "lane-marking"),
-        ("横断", "cross-section"),
-        ("品質", "quality"),
-        ("出来形", "dekigata"),
-        ("温度", "temperature"),
-        ("工程", "schedule"),
-        ("カルテ", "karte"),
-        ("スキル", "skill"),
-        ("Gemini", "gemini"),
-        ("Claude", "claude"),
-        ("DXF", "dxf"),
-        ("レイアウト", "layout"),
+        ("test", "test"),
+        ("CLI", "cli"),
+        ("API", "api"),
+        ("deploy", "deploy"),
     ];
 
     let all_text = user_messages.join(" ");
-    for (jp, en) in &keywords {
-        if all_text.contains(jp) {
-            topics.push(en.to_string());
+    for (kw, tag) in &keywords {
+        if all_text.contains(kw) {
+            topics.push(tag.to_string());
         }
     }
 

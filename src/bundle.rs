@@ -183,18 +183,12 @@ fn sanitize_public_content(content: &str) -> String {
         let mut s = line.to_string();
 
         // Scrub concrete paths and user-specific environment hints.
-        s = s.replace("H:/マイドライブ/", "<DRIVE_PATH>/");
-        s = s.replace("H:\\マイドライブ\\", "<DRIVE_PATH>\\");
         s = s.replace("C:/Users/", "<USER_HOME>/");
         s = s.replace("C:\\Users\\", "<USER_HOME>\\");
         s = s.replace("~/.claude/", "<CLAUDE_HOME>/");
         s = s.replace("~/.claude/history.jsonl", "<CLAUDE_HISTORY>");
         s = s.replace("~/.claude/skills/", "<CLAUDE_SKILLS_DIR>/");
         s = s.replace("CLAUDECODE= claude -p", "claude -p");
-
-        // Scrub highly specific operational wording.
-        s = s.replace("住所", "地域情報");
-        s = s.replace("現場名", "案件名");
 
         out.push(s);
     }
@@ -421,12 +415,9 @@ pub fn validate_bundle(
 
         if opts.public_profile {
             for marker in [
-                "H:/マイドライブ/",
                 "C:/Users/",
                 "~/.claude/",
                 "CLAUDECODE=",
-                "住所",
-                "現場名",
             ] {
                 if content.contains(marker) {
                     report.warnings.push(format!(
@@ -1213,7 +1204,7 @@ name: sensitive
 description: test
 ---
 
-Use H:/マイドライブ/ path and ~/.claude/history.jsonl
+Use C:/Users/someone/ path and ~/.claude/history.jsonl
 "#;
         std::fs::write(skills_dir.join("sensitive.md"), content).unwrap();
 
@@ -1251,7 +1242,7 @@ Use H:/マイドライブ/ path and ~/.claude/history.jsonl
         )
         .unwrap();
 
-        assert!(report.warnings.iter().any(|w| w.contains("H:/マイドライブ/")));
+        assert!(report.warnings.iter().any(|w| w.contains("C:/Users/")));
     }
 
     #[test]
@@ -1262,7 +1253,7 @@ Use H:/マイドライブ/ path and ~/.claude/history.jsonl
 
         let content = r#"---
 name: ai-interaction
-description: AIとの対話における洞察。ロケットパンチ比喩など。
+description: Insights from AI interactions. Metaphors and patterns.
 ---
 
 ## Overview
@@ -1431,10 +1422,9 @@ name: sensitive
 description: test
 ---
 
-Path: H:/マイドライブ/
 Local: C:/Users/yuuji/
 Claude: ~/.claude/history.jsonl
-住所と現場名を扱う
+Handle user data
 "#;
         std::fs::write(skills_dir.join("sensitive.md"), content).unwrap();
 
@@ -1500,9 +1490,9 @@ name: sensitive
 author: yuuji
 ---
 
-1. Google Drive（H:/マイドライブ/）を参照する
-2. 住所と現場名を含む一覧を作る
-3. CLAUDECODE= claude -p "検証"
+1. Reference C:/Users/yuuji/projects/ path
+2. Generate a project listing
+3. CLAUDECODE= claude -p "verify"
 "#;
         std::fs::write(draft_dir.path().join("sensitive.md"), content).unwrap();
 
@@ -1542,9 +1532,7 @@ author: yuuji
         let exported = std::fs::read_to_string(bundle_dir.path().join("skills").join("sensitive.md"))
             .unwrap();
         assert!(!exported.contains("author: yuuji"));
-        assert!(exported.contains("<DRIVE_PATH>/"));
-        assert!(exported.contains("地域情報"));
-        assert!(exported.contains("案件名"));
+        assert!(exported.contains("<USER_HOME>/"));
         assert!(!exported.contains("CLAUDECODE= claude -p"));
     }
 }

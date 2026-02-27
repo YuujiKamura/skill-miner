@@ -43,36 +43,36 @@ fn group_by_domain_empty_list() {
 
 #[test]
 fn group_by_domain_single_item() {
-    let classified = vec![make_classified("conv1", "Rust開発")];
+    let classified = vec![make_classified("conv1", "CLI & Tooling")];
     let groups = classifier::group_by_domain(&classified);
     assert_eq!(groups.len(), 1);
-    assert!(groups.contains_key("Rust開発"));
-    assert_eq!(groups["Rust開発"].len(), 1);
+    assert!(groups.contains_key("CLI & Tooling"));
+    assert_eq!(groups["CLI & Tooling"].len(), 1);
 }
 
 #[test]
 fn group_by_domain_multiple_domains() {
     let classified = vec![
-        make_classified("c1", "Rust開発"),
-        make_classified("c2", "AI連携"),
-        make_classified("c3", "Rust開発"),
-        make_classified("c4", "PDF操作"),
+        make_classified("c1", "CLI & Tooling"),
+        make_classified("c2", "AI & Machine Learning"),
+        make_classified("c3", "CLI & Tooling"),
+        make_classified("c4", "Database & Storage"),
     ];
     let groups = classifier::group_by_domain(&classified);
     assert_eq!(groups.len(), 3);
-    assert_eq!(groups["Rust開発"].len(), 2);
-    assert_eq!(groups["AI連携"].len(), 1);
-    assert_eq!(groups["PDF操作"].len(), 1);
+    assert_eq!(groups["CLI & Tooling"].len(), 2);
+    assert_eq!(groups["AI & Machine Learning"].len(), 1);
+    assert_eq!(groups["Database & Storage"].len(), 1);
 }
 
 #[test]
 fn group_by_domain_preserves_references() {
     let classified = vec![
-        make_classified("aaa", "テスト"),
-        make_classified("bbb", "テスト"),
+        make_classified("aaa", "Testing & QA"),
+        make_classified("bbb", "Testing & QA"),
     ];
     let groups = classifier::group_by_domain(&classified);
-    let refs = &groups["テスト"];
+    let refs = &groups["Testing & QA"];
     assert_eq!(refs[0].summary.id, "aaa");
     assert_eq!(refs[1].summary.id, "bbb");
 }
@@ -96,15 +96,15 @@ fn parse_classify_fixture() {
 
     let entries: Vec<Entry> = util::parse_json_response(&fixture).unwrap();
     assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0].domain, "Rust開発");
-    assert_eq!(entries[1].domain, "AI連携");
-    assert_eq!(entries[2].domain, "PDF操作");
+    assert_eq!(entries[0].domain, "Web Development");
+    assert_eq!(entries[1].domain, "AI & Machine Learning");
+    assert_eq!(entries[2].domain, "Database & Storage");
     assert!((entries[0].confidence - 0.95).abs() < f64::EPSILON);
 }
 
 #[test]
 fn parse_json_with_code_fence() {
-    let input = "```json\n[{\"index\": 0, \"domain\": \"Rust開発\"}]\n```";
+    let input = "```json\n[{\"index\": 0, \"domain\": \"Web Development\"}]\n```";
 
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]
@@ -115,13 +115,13 @@ fn parse_json_with_code_fence() {
 
     let entries: Vec<Entry> = util::parse_json_response(input).unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].domain, "Rust開発");
+    assert_eq!(entries[0].domain, "Web Development");
 }
 
 #[test]
 fn parse_json_with_control_chars() {
     // Simulate AI response with control characters embedded
-    let input = "[{\"index\": 0, \"domain\": \"Rust\x01開発\"}]";
+    let input = "[{\"index\": 0, \"domain\": \"Web\x01Development\"}]";
 
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]
@@ -133,12 +133,12 @@ fn parse_json_with_control_chars() {
     let entries: Vec<Entry> = util::parse_json_response(input).unwrap();
     assert_eq!(entries.len(), 1);
     // Control char replaced with space
-    assert_eq!(entries[0].domain, "Rust 開発");
+    assert_eq!(entries[0].domain, "Web Development");
 }
 
 #[test]
 fn parse_json_with_surrounding_text() {
-    let input = "以下が結果です:\n[{\"index\": 0, \"domain\": \"PDF操作\"}]\n以上。";
+    let input = "Here are the results:\n[{\"index\": 0, \"domain\": \"Database & Storage\"}]\nDone.";
 
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]
@@ -149,7 +149,7 @@ fn parse_json_with_surrounding_text() {
 
     let entries: Vec<Entry> = util::parse_json_response(input).unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].domain, "PDF操作");
+    assert_eq!(entries[0].domain, "Database & Storage");
 }
 
 #[test]

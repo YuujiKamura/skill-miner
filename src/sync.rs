@@ -1,5 +1,5 @@
 // Auto-sync: commit and push skill drafts to a configured git repository.
-// CRITICAL SAFETY: public repository への push は絶対禁止。
+// CRITICAL SAFETY: never push to a public repository.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};

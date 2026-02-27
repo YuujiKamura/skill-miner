@@ -16,78 +16,78 @@ fn normalize_whitespace_only() {
 
 #[test]
 fn normalize_unknown_domain_falls_back_to_misc() {
-    let d = domains::normalize("宇宙開発");
+    let d = domains::normalize("space exploration");
     assert_eq!(d.slug, "misc");
 }
 
 #[test]
-fn normalize_exact_match_pavement() {
-    let d = domains::normalize("舗装工事");
-    assert_eq!(d.slug, "pavement");
-    assert_eq!(d.name, "舗装工事");
+fn normalize_exact_match_web_dev() {
+    let d = domains::normalize("Web Development");
+    assert_eq!(d.slug, "web-dev");
+    assert_eq!(d.name, "Web Development");
 }
 
 #[test]
-fn normalize_exact_match_photo() {
-    let d = domains::normalize("写真管理");
-    assert_eq!(d.slug, "photo-management");
+fn normalize_exact_match_ai_ml() {
+    let d = domains::normalize("AI & Machine Learning");
+    assert_eq!(d.slug, "ai-ml");
 }
 
 #[test]
 fn normalize_substring_match() {
-    // "舗装工事関連" contains "舗装工事"
-    let d = domains::normalize("舗装工事関連");
-    assert_eq!(d.slug, "pavement");
+    // "Web Development projects" contains "Web Development"
+    let d = domains::normalize("Web Development projects");
+    assert_eq!(d.slug, "web-dev");
 }
 
 #[test]
 fn normalize_keyword_match_single() {
-    // "転圧" is a keyword for 舗装工事
-    let d = domains::normalize("転圧作業の手順");
-    assert_eq!(d.slug, "pavement");
+    // "Docker" is a keyword for DevOps & Infrastructure
+    let d = domains::normalize("Docker container setup");
+    assert_eq!(d.slug, "devops");
 }
 
 #[test]
 fn normalize_keyword_match_multiple_picks_best() {
-    // "温度管理" and "転圧" both map to 舗装工事
-    let d = domains::normalize("温度管理と転圧の関係");
-    assert_eq!(d.slug, "pavement");
+    // "React" and "CSS" both map to Web Development
+    let d = domains::normalize("React CSS styling guide");
+    assert_eq!(d.slug, "web-dev");
 }
 
 #[test]
 fn normalize_keyword_match_ai() {
-    let d = domains::normalize("Geminiのプロンプト設計");
-    assert_eq!(d.slug, "ai-integration");
+    let d = domains::normalize("LLM prompt engineering");
+    assert_eq!(d.slug, "ai-ml");
 }
 
 #[test]
-fn normalize_keyword_match_pdf() {
-    let d = domains::normalize("PDF生成ツール");
-    assert_eq!(d.slug, "pdf");
+fn normalize_keyword_match_database() {
+    let d = domains::normalize("PostgreSQL query optimization");
+    assert_eq!(d.slug, "database");
 }
 
 #[test]
-fn normalize_keyword_match_spreadsheet() {
-    let d = domains::normalize("Excelマクロの修正");
-    assert_eq!(d.slug, "spreadsheet");
+fn normalize_keyword_match_testing() {
+    let d = domains::normalize("unit test coverage report");
+    assert_eq!(d.slug, "testing");
 }
 
 #[test]
 fn normalize_misc_slug_is_stable() {
-    let d = domains::normalize("完全に無関係な文字列xyz");
+    let d = domains::normalize("completely unrelated string xyz");
     assert_eq!(d.slug, "misc");
-    assert_eq!(d.name, "その他");
+    assert_eq!(d.name, "Miscellaneous");
 }
 
 #[test]
 fn find_by_name_returns_none_for_unknown() {
-    assert!(domains::find_by_name("存在しない分野").is_none());
+    assert!(domains::find_by_name("Nonexistent Domain").is_none());
 }
 
 #[test]
 fn find_by_name_returns_some_for_exact() {
-    let d = domains::find_by_name("舗装工事").unwrap();
-    assert_eq!(d.slug, "pavement");
+    let d = domains::find_by_name("Web Development").unwrap();
+    assert_eq!(d.slug, "web-dev");
 }
 
 #[test]
