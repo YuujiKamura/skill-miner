@@ -214,13 +214,41 @@ pub struct SkillDraft {
 impl SkillDraft {
     /// Format as a complete .md file with YAML frontmatter.
     pub fn format_md(&self) -> String {
+        let escaped_desc = escape_yaml_double_quoted(&self.description);
         format!(
             "---\nname: {}\ndescription: \"{}\"\n---\n\n{}\n",
-            self.name,
-            self.description.replace('"', r#"\""#),
-            self.body
+            self.name, escaped_desc, self.body
         )
     }
+}
+
+/// Escape a string for use inside a YAML double-quoted scalar.
+///
+/// Handles all YAML 1.1 special escape sequences so the value is safe
+/// when placed between double quotes in YAML frontmatter.
+fn escape_yaml_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),     // backspace
+            '\x07' => out.push_str("\\a"),     // bell
+            '\x0C' => out.push_str("\\f"),     // form feed
+            '\x0B' => out.push_str("\\v"),     // vertical tab
+            '\x1B' => out.push_str("\\e"),     // escape
+            '\x00' => out.push_str("\\0"),     // null
+            c if c.is_control() => {
+                // Other control chars: use Unicode escape
+                out.push_str(&format!("\\x{:02X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ── State management types ──
@@ -280,27 +308,6 @@ pub struct Manifest {
     pub pending_extracts: Vec<ClassifiedConversation>,
 }
 
-impl Manifest {
-    /// Merge new drafts into this manifest, preserving existing entries.
-    /// Updates counts/hash for existing slugs; appends new ones.
-    pub fn merge_drafts(&mut self, drafts: &[SkillDraft], clusters: &[DomainCluster]) {
-        let new_mf = crate::manifest::create_from_drafts(drafts, clusters, std::path::Path::new(""));
-
-        for new_entry in new_mf.entries {
-            if let Some(existing) = self.entries.iter_mut().find(|e| e.slug == new_entry.slug) {
-                // Update counts/hash, preserve status/deployed_at/score/fire_count
-                existing.pattern_count = new_entry.pattern_count;
-                existing.conversation_count += new_entry.conversation_count;
-                existing.content_hash = new_entry.content_hash;
-                existing.generated_at = new_entry.generated_at;
-            } else {
-                self.entries.push(new_entry);
-            }
-        }
-
-        self.generated_at = chrono::Utc::now();
-    }
-}
 
 // ── Bundle types (export/import/trading) ──
 
@@ -404,6 +411,8 @@ pub struct MineConfig {
     pub ai_options: cli_ai_analyzer::AnalyzeOptions,
     /// Maximum parallel AI calls for extraction
     pub max_parallel: usize,
+    /// AI options for pre-summarization (None = skip summarize step)
+    pub summarize_options: Option<cli_ai_analyzer::AnalyzeOptions>,
 }
 
 impl Default for MineConfig {
@@ -417,6 +426,7 @@ impl Default for MineConfig {
             min_messages: 4,
             ai_options: cli_ai_analyzer::AnalyzeOptions::default(),
             max_parallel: 4,
+            summarize_options: Some(cli_ai_analyzer::AnalyzeOptions::with_model("gemini-3-pro-preview")),
         }
     }
 }
@@ -425,5 +435,11 @@ fn dirs_or_default() -> PathBuf {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+        .unwrap_or_else(|_| {
+            eprintln!(
+                "warning: neither USERPROFILE nor HOME is set; \
+                 falling back to current directory for config paths"
+            );
+            PathBuf::from(".")
+        })
 }

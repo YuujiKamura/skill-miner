@@ -9,6 +9,27 @@ use std::collections::HashMap;
 /// Prompt template for extraction (loaded from file at compile time).
 const EXTRACT_PROMPT: &str = include_str!("../prompts/extract.txt");
 
+/// Prompt template for pre-summarization (loaded from file at compile time).
+const SUMMARIZE_PROMPT: &str = include_str!("../prompts/summarize.txt");
+
+/// Maximum number of conversations to include in context.
+const MAX_CONVERSATIONS: usize = 20;
+
+/// Maximum number of messages to scan per conversation for user-assistant exchanges.
+const MAX_MESSAGES_PER_CONV: usize = 40;
+
+/// Truncation length (chars) for user messages in context.
+const USER_MSG_TRUNCATE_LEN: usize = 2000;
+
+/// Truncation length (chars) for assistant messages in context.
+const ASSISTANT_MSG_TRUNCATE_LEN: usize = 3000;
+
+/// Maximum number of file paths to include in conversation header metadata.
+const MAX_FILES_IN_HEADER: usize = 10;
+
+/// Maximum number of commands to include in conversation header metadata.
+const MAX_CMDS_IN_HEADER: usize = 5;
+
 /// Remove `<system-reminder>...</system-reminder>` blocks from text.
 fn strip_system_reminders(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
@@ -27,19 +48,17 @@ fn strip_system_reminders(text: &str) -> String {
     result
 }
 
-/// Extract knowledge patterns from a domain cluster.
-/// When `conv_map` is provided, uses pre-parsed conversations to avoid re-parsing.
-/// When `conv_map` is None (e.g. standalone `extract` command), falls back to parsing from source_path.
-pub fn extract_patterns(
-    domain: &str,
+/// Build a context string from conversations for the extraction prompt.
+///
+/// Iterates over conversations, extracts user-assistant exchanges, and formats
+/// them with header metadata (files touched, commands used) into a single string.
+fn build_extraction_context(
     conversations: &[&ClassifiedConversation],
     conv_map: Option<&HashMap<String, &Conversation>>,
-    options: &AnalyzeOptions,
-) -> Result<DomainCluster, SkillMinerError> {
-    // Build context from full conversations (limited to avoid token overflow)
+) -> Result<String, SkillMinerError> {
     let mut context_parts = Vec::new();
 
-    for (i, conv) in conversations.iter().take(20).enumerate() {
+    for (i, conv) in conversations.iter().take(MAX_CONVERSATIONS).enumerate() {
         // Use pre-parsed conversation from map if available, otherwise parse from file
         let owned_conv;
         let full_conv = if let Some(map) = conv_map {
@@ -58,16 +77,16 @@ pub fn extract_patterns(
         let mut exchanges = Vec::new();
         let mut user_msg = None;
 
-        for msg in full_conv.messages.iter().take(40) {
+        for msg in full_conv.messages.iter().take(MAX_MESSAGES_PER_CONV) {
             match msg.role {
                 Role::User => {
                     let cleaned = strip_system_reminders(&msg.content);
-                    user_msg = Some(util::truncate(&cleaned, 2000));
+                    user_msg = Some(util::truncate(&cleaned, USER_MSG_TRUNCATE_LEN));
                 }
                 Role::Assistant => {
                     if let Some(u) = user_msg.take() {
                         let cleaned_a = strip_system_reminders(&msg.content);
-                        let a = util::truncate(&cleaned_a, 3000);
+                        let a = util::truncate(&cleaned_a, ASSISTANT_MSG_TRUNCATE_LEN);
                         exchanges.push(format!("U: {}\nA: {}", u, a));
                     }
                 }
@@ -82,11 +101,11 @@ pub fn extract_patterns(
             );
             // Append tool usage metadata if available
             if !conv.summary.files_touched.is_empty() {
-                let files: Vec<_> = conv.summary.files_touched.iter().take(10).map(|f| f.as_str()).collect();
+                let files: Vec<_> = conv.summary.files_touched.iter().take(MAX_FILES_IN_HEADER).map(|f| f.as_str()).collect();
                 header.push_str(&format!("\nfiles: [{}]", files.join(", ")));
             }
             if !conv.summary.commands_used.is_empty() {
-                let cmds: Vec<_> = conv.summary.commands_used.iter().take(5).map(|c| c.as_str()).collect();
+                let cmds: Vec<_> = conv.summary.commands_used.iter().take(MAX_CMDS_IN_HEADER).map(|c| c.as_str()).collect();
                 header.push_str(&format!("\ncmds: [{}]", cmds.join(", ")));
             }
             context_parts.push(format!(
@@ -97,7 +116,37 @@ pub fn extract_patterns(
         }
     }
 
-    let context = context_parts.join("\n\n");
+    Ok(context_parts.join("\n\n"))
+}
+
+/// Extract knowledge patterns from a domain cluster.
+/// When `conv_map` is provided, uses pre-parsed conversations to avoid re-parsing.
+/// When `conv_map` is None (e.g. standalone `extract` command), falls back to parsing from source_path.
+pub fn extract_patterns(
+    domain: &str,
+    conversations: &[&ClassifiedConversation],
+    conv_map: Option<&HashMap<String, &Conversation>>,
+    options: &AnalyzeOptions,
+    summarize_options: Option<&AnalyzeOptions>,
+) -> Result<DomainCluster, SkillMinerError> {
+    let raw_context = build_extraction_context(conversations, conv_map)?;
+
+    // Pre-summarize with a separate model if configured
+    let context = if let Some(sum_opts) = summarize_options {
+        let sum_prompt = SUMMARIZE_PROMPT
+            .replace("{domain}", domain)
+            .replace("{context}", &raw_context);
+        eprintln!("    [summarize] {} with {}...", domain, sum_opts.model);
+        match prompt(&sum_prompt, sum_opts.clone()) {
+            Ok(summary) => summary,
+            Err(e) => {
+                eprintln!("    [summarize] failed: {} — falling back to raw context", e);
+                raw_context
+            }
+        }
+    } else {
+        raw_context
+    };
 
     let prompt_text = EXTRACT_PROMPT
         .replace("{domain}", domain)
@@ -130,6 +179,7 @@ pub fn extract_all_parallel(
     conv_map: Option<&HashMap<String, &Conversation>>,
     options: &AnalyzeOptions,
     max_parallel: usize,
+    summarize_options: Option<&AnalyzeOptions>,
 ) -> Result<(Vec<DomainCluster>, usize, Vec<String>), SkillMinerError> {
     const MIN_CONVERSATIONS: usize = 1;
     let entries: Vec<_> = groups
@@ -160,7 +210,7 @@ pub fn extract_all_parallel(
             .par_iter()
             .map(|(domain, convs)| {
                 eprintln!("  {} ({} conversations)...", domain, convs.len());
-                let r = extract_patterns(domain, convs, conv_map, options);
+                let r = extract_patterns(domain, convs, conv_map, options, summarize_options);
                 (domain.to_string(), r)
             })
             .collect()
@@ -196,12 +246,8 @@ struct PatternEntry {
     steps: Vec<String>,
     #[serde(default)]
     code_examples: Vec<String>,
-    /// Legacy: old prompt returns frequency. New prompt returns discussed: true.
-    /// Accept either format.
     #[serde(default = "default_freq")]
     frequency: usize,
-    #[serde(default)]
-    discussed: bool,
 }
 
 impl PatternEntry {

@@ -4,16 +4,7 @@ Each conversation includes files (file paths operated on) and cmds (commands exe
 Extract **domain-specific knowledge** that is unique to this domain.
 Specifically: decision criteria only experienced practitioners would know, design pitfalls, domain-specific workflows.
 
-Exclude the following from extraction:
-- Content from CLAUDE.md, settings.json, or other configuration files quoted in system messages
-- Generic agent behavior rules (e.g., "don't interrupt", "use teams", "verify before completing")
-- Instructions that apply to ALL sessions, not domain-specific knowledge from THIS conversation
-
-Exclude (NOT domain-specific):
-- Generic code review or verification loops
-- Build/test cycles (cargo build, npm test, etc.)
-- Version control operations (git status, git commit, etc.)
-- Generic file read→edit→save development workflows
+Ignore generic workflow steps, configuration content, and agent rules.
 
 Constraints:
 - Maximum 5 patterns.

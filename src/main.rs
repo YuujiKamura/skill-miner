@@ -2,10 +2,23 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use skill_miner::{
     bundle, classifier, compressor, deployer, extractor, generator, graph, history, manifest, miner,
-    parser, refiner, scorer, util, DraftStatus, MineConfig, PruneOptions,
+    parser, refiner, scorer, today, util, DraftStatus, MineConfig, PruneOptions,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum TodayFormat {
+    Raw,
+    Summary,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum SummaryGranularity {
+    Coarse,
+    Medium,
+    Fine,
+}
 
 #[derive(Parser)]
 #[command(name = "skill-miner")]
@@ -55,6 +68,15 @@ enum Command {
         /// Maximum parallel AI calls
         #[arg(long, default_value = "4")]
         parallel: usize,
+        /// Skip pre-summarization step
+        #[arg(long)]
+        no_summarize: bool,
+        /// Backend for summarization (gemini or claude)
+        #[arg(long, default_value = "gemini")]
+        summarize_backend: String,
+        /// Model for summarization
+        #[arg(long, default_value = "gemini-3-pro-preview")]
+        summarize_model: String,
     },
 
     /// Generate skill drafts from extracted patterns
@@ -97,6 +119,15 @@ enum Command {
         /// Auto-sync: commit and push drafts after mining
         #[arg(long)]
         sync: bool,
+        /// Skip pre-summarization step
+        #[arg(long)]
+        no_summarize: bool,
+        /// Backend for summarization (gemini or claude)
+        #[arg(long, default_value = "gemini")]
+        summarize_backend: String,
+        /// Model for summarization
+        #[arg(long, default_value = "gemini-3-pro-preview")]
+        summarize_model: String,
     },
 
     /// List skill drafts with their status
@@ -255,14 +286,23 @@ enum Command {
         dir: Option<PathBuf>,
     },
 
-    /// Show today's work timeline from history.jsonl
+    /// Show work timeline from history.jsonl
     Today {
+        /// How many days back to include (1 = today only)
+        #[arg(long, default_value = "1")]
+        days: u32,
         /// Filter by project path (substring match)
         #[arg(short, long)]
         project: Option<String>,
         /// Search display text (substring match, case-insensitive)
         #[arg(short, long)]
         search: Option<String>,
+        /// Output format
+        #[arg(long, value_enum, default_value = "raw")]
+        format: TodayFormat,
+        /// Summary granularity (effective when --format summary)
+        #[arg(long, value_enum, default_value = "medium")]
+        granularity: SummaryGranularity,
     },
 }
 
@@ -283,7 +323,10 @@ fn main() -> Result<()> {
             min_messages,
             output,
         } => cmd_classify(&config, days, min_messages, output),
-        Command::Extract { input, output, parallel } => cmd_extract(&config, input, output, parallel),
+        Command::Extract { input, output, parallel, no_summarize, summarize_backend, summarize_model } => {
+            let sum_opts = build_summarize_options(no_summarize, &summarize_backend, &summarize_model);
+            cmd_extract(&config, input, output, parallel, sum_opts.as_ref())
+        }
         Command::Generate { input, output } => cmd_generate(&config, input, output),
         Command::Mine {
             output,
@@ -295,7 +338,13 @@ fn main() -> Result<()> {
             min_significance,
             dir,
             sync,
-        } => cmd_mine(&config, output, dry_run, parallel, max_windows, max_days, min_messages, min_significance, dir, sync),
+            no_summarize,
+            summarize_backend,
+            summarize_model,
+        } => {
+            let sum_opts = build_summarize_options(no_summarize, &summarize_backend, &summarize_model);
+            cmd_mine(&config, output, dry_run, parallel, max_windows, max_days, min_messages, min_significance, dir, sync, sum_opts)
+        }
         Command::List { dir } => cmd_list(&config, dir),
         Command::Diff { name, dir } => cmd_diff(&config, name, dir),
         Command::Approve { names, all, dir } => cmd_approve(&config, names, all, dir),
@@ -352,8 +401,32 @@ fn main() -> Result<()> {
             refine,
             dir,
         } => cmd_consolidate(&config, names, all, days, min_score, dry_run, refine, dir),
-        Command::Today { project, search } => cmd_today(&config, project, search),
+        Command::Today {
+            days,
+            project,
+            search,
+            format,
+            granularity,
+        } => cmd_today(&config, days, project, search, format, granularity),
     }
+}
+
+fn build_summarize_options(
+    no_summarize: bool,
+    backend: &str,
+    model: &str,
+) -> Option<cli_ai_analyzer::AnalyzeOptions> {
+    if no_summarize {
+        return None;
+    }
+    let mut opts = cli_ai_analyzer::AnalyzeOptions::with_model(model);
+    match backend {
+        "claude" => {
+            opts = opts.with_backend(cli_ai_analyzer::Backend::Claude);
+        }
+        _ => {} // gemini is default
+    }
+    Some(opts)
 }
 
 fn cmd_scan(config: &MineConfig, days: u32, min_messages: usize) -> Result<()> {
@@ -454,9 +527,21 @@ fn cmd_scan_fast(config: &MineConfig, days: u32, project: Option<String>) -> Res
     Ok(())
 }
 
-fn cmd_today(config: &MineConfig, project: Option<String>, search: Option<String>) -> Result<()> {
+fn cmd_today(
+    config: &MineConfig,
+    days: u32,
+    project: Option<String>,
+    search: Option<String>,
+    format: TodayFormat,
+    granularity: SummaryGranularity,
+) -> Result<()> {
     let entries = history::parse_history(&config.history_path)?;
-    let today_entries = history::filter_today(&entries);
+    let mut today_entries = if days <= 1 {
+        history::filter_today(&entries)
+    } else {
+        history::filter_by_days(&entries, days)
+    };
+    today_entries.sort_by_key(|e| e.timestamp);
 
     // Apply project filter
     let today_entries: Vec<_> = if let Some(ref proj) = project {
@@ -489,7 +574,11 @@ fn cmd_today(config: &MineConfig, project: Option<String>, search: Option<String
     }
 
     let today_str = chrono::Local::now().format("%Y-%m-%d");
-    println!("=== Today's Activity ({}) ===", today_str);
+    if days <= 1 {
+        println!("=== Today's Activity ({}) ===", today_str);
+    } else {
+        println!("=== Recent Activity (last {} days, up to {}) ===", days, today_str);
+    }
     println!("{} sessions | {} projects", today_entries.len(), project_set.len());
     if let Some(ref proj) = project {
         println!("Project filter: {}", proj);
@@ -497,26 +586,41 @@ fn cmd_today(config: &MineConfig, project: Option<String>, search: Option<String
     if let Some(ref query) = search {
         println!("Search: {}", query);
     }
+    println!("Format: {:?}", format);
+    if matches!(format, TodayFormat::Summary) {
+        println!("Granularity: {:?}", granularity);
+    }
     println!();
 
-    for entry in &today_entries {
-        // Format timestamp as HH:MM local time
-        let dt = chrono::DateTime::from_timestamp_millis(entry.timestamp as i64)
-            .unwrap_or_default()
-            .with_timezone(&chrono::Local);
-        let time_str = dt.format("%H:%M");
+    if matches!(format, TodayFormat::Raw) {
+        for entry in &today_entries {
+            // Format timestamp as HH:MM local time
+            let dt = chrono::DateTime::from_timestamp_millis(entry.timestamp as i64)
+                .unwrap_or_default()
+                .with_timezone(&chrono::Local);
+            let time_str = dt.format("%H:%M");
 
-        // Extract last path component for project name
-        let proj_name = entry
-            .project
-            .rsplit(|c| c == '\\' || c == '/')
-            .next()
-            .unwrap_or(&entry.project);
+            // Extract last path component for project name
+            let proj_name = entry
+                .project
+                .rsplit(|c| c == '\\' || c == '/')
+                .next()
+                .unwrap_or(&entry.project);
 
-        let display = util::truncate(&entry.display, 80);
-        println!("{}  [{}] {}", time_str, proj_name, display);
+            let display = util::truncate(&entry.display, 80);
+            println!("{}  [{}] {}", time_str, proj_name, display);
+        }
+        return Ok(());
     }
 
+    let slot_minutes = match granularity {
+        SummaryGranularity::Coarse => 180,
+        SummaryGranularity::Medium => 60,
+        SummaryGranularity::Fine => 30,
+    };
+    let slot_contexts = today::build_slot_contexts(config, days, slot_minutes);
+    let ai_summaries = today::summarize_slots_with_ai(&slot_contexts, &config.ai_options);
+    today::print_summary_timeline(&today_entries, slot_minutes, &ai_summaries);
     Ok(())
 }
 
@@ -556,7 +660,13 @@ fn cmd_classify(
     Ok(())
 }
 
-fn cmd_extract(config: &MineConfig, input: PathBuf, output: Option<PathBuf>, parallel: usize) -> Result<()> {
+fn cmd_extract(
+    config: &MineConfig,
+    input: PathBuf,
+    output: Option<PathBuf>,
+    parallel: usize,
+    summarize_options: Option<&cli_ai_analyzer::AnalyzeOptions>,
+) -> Result<()> {
     let json = std::fs::read_to_string(&input)?;
     let classified: Vec<skill_miner::ClassifiedConversation> = serde_json::from_str(&json)?;
 
@@ -566,7 +676,7 @@ fn cmd_extract(config: &MineConfig, input: PathBuf, output: Option<PathBuf>, par
 
     // Standalone extract: no pre-parsed conversations, will parse from source_path
     let (clusters, _extract_calls, failed_domains) =
-        extractor::extract_all_parallel(&groups, None, &config.ai_options, parallel)?;
+        extractor::extract_all_parallel(&groups, None, &config.ai_options, parallel, summarize_options)?;
     if !failed_domains.is_empty() {
         eprintln!("  {} domain(s) failed, {} succeeded", failed_domains.len(), clusters.len());
     }
@@ -641,11 +751,16 @@ fn cmd_mine(
     min_significance: f64,
     dir: Option<PathBuf>,
     sync: bool,
+    summarize_options: Option<cli_ai_analyzer::AnalyzeOptions>,
 ) -> Result<()> {
     let drafts_dir = output.unwrap_or_else(|| {
         dir.unwrap_or_else(|| config.skills_dir.join("drafts"))
     });
     std::fs::create_dir_all(&drafts_dir)?;
+
+    // Override config's summarize_options with CLI flags
+    let mut config = config.clone();
+    config.summarize_options = summarize_options;
 
     let mut mf = load_or_create_manifest(&drafts_dir)?;
 
@@ -655,9 +770,10 @@ fn cmd_mine(
         min_messages,
         parallel,
         min_significance_ratio: min_significance,
+        max_consecutive_empty: miner::DEFAULT_MAX_CONSECUTIVE_EMPTY,
     };
 
-    let result = miner::mine_progressive(config, &mut mf, &progressive, dry_run, &drafts_dir)?;
+    let result = miner::mine_progressive(&config, &mut mf, &progressive, dry_run, &drafts_dir)?;
 
     // Display results
     for draft in &result.drafts {
@@ -1120,11 +1236,15 @@ fn cmd_export(
 }
 
 fn derive_public_output_path(output: &std::path::Path) -> PathBuf {
-    let output_str = output.to_string_lossy();
-    if output_str.ends_with(".skillpack") {
-        PathBuf::from(output_str.replace(".skillpack", "-public.skillpack"))
-    } else {
-        PathBuf::from(format!("{}-public", output_str))
+    let stem = output.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = output.extension();
+    let new_name = match ext {
+        Some(e) => format!("{}-public.{}", stem, e.to_string_lossy()),
+        None => format!("{}-public", stem),
+    };
+    match output.parent() {
+        Some(parent) if parent != std::path::Path::new("") => parent.join(new_name),
+        _ => PathBuf::from(new_name),
     }
 }
 
@@ -1149,6 +1269,36 @@ fn print_bundle_summary(
         }
     }
     println!("Output: {}", output.display());
+}
+
+/// Infer the project memory directory by matching CWD against existing project dirs.
+/// Falls back to creating an `imported-context` directory next to drafts.
+fn infer_project_memory_dir(config: &MineConfig, drafts_dir: &std::path::Path) -> Result<PathBuf> {
+    let projects_dir = &config.projects_dir;
+    let mem = if projects_dir.exists() {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd_str = cwd.to_string_lossy().replace(['/', '\\', ':'], "-");
+
+        // Find the best matching existing project directory
+        let mut best_match: Option<PathBuf> = None;
+        let mut best_len = 0;
+        if let Ok(entries) = std::fs::read_dir(projects_dir) {
+            for entry in entries.flatten() {
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                if cwd_str.starts_with(&dir_name) && dir_name.len() > best_len {
+                    best_len = dir_name.len();
+                    best_match = Some(entry.path());
+                }
+            }
+        }
+
+        let project_dir = best_match.unwrap_or_else(|| projects_dir.join(&cwd_str));
+        project_dir.join("memory")
+    } else {
+        drafts_dir.join("imported-context")
+    };
+    std::fs::create_dir_all(&mem)?;
+    Ok(mem)
 }
 
 fn cmd_import(config: &MineConfig, bundle_path: PathBuf, dir: Option<PathBuf>) -> Result<()> {
@@ -1179,39 +1329,7 @@ fn cmd_import(config: &MineConfig, bundle_path: PathBuf, dir: Option<PathBuf>) -
     // Restore context files if present
     let ctx_dir = bundle_path.join("context").join("memory");
     if ctx_dir.exists() {
-        // Find current project's memory dir by matching CWD against existing project dirs
-        let projects_dir = config.projects_dir.clone();
-        let memory_dir = if projects_dir.exists() {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let cwd_str = cwd.to_string_lossy().replace(['/', '\\', ':'], "-");
-
-            // Find the best matching existing project directory
-            let mut best_match: Option<PathBuf> = None;
-            let mut best_len = 0;
-            if let Ok(entries) = std::fs::read_dir(&projects_dir) {
-                for entry in entries.flatten() {
-                    let dir_name = entry.file_name().to_string_lossy().to_string();
-                    // Check if CWD key starts with or contains this project key
-                    if cwd_str.starts_with(&dir_name) && dir_name.len() > best_len {
-                        best_len = dir_name.len();
-                        best_match = Some(entry.path());
-                    }
-                }
-            }
-
-            let project_dir = best_match.unwrap_or_else(|| {
-                // No match found; use the CWD-derived key
-                projects_dir.join(&cwd_str)
-            });
-            let mem = project_dir.join("memory");
-            std::fs::create_dir_all(&mem)?;
-            mem
-        } else {
-            // Fallback: create memory dir next to drafts
-            let mem = drafts_dir.join("imported-context");
-            std::fs::create_dir_all(&mem)?;
-            mem
-        };
+        let memory_dir = infer_project_memory_dir(config, &drafts_dir)?;
 
         bundle::import_context(&bundle_path, &memory_dir, &mut result)?;
 

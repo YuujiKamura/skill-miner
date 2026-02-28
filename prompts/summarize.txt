@@ -1,0 +1,14 @@
+Below is a conversation between a user and an AI assistant in the "{domain}" domain.
+
+Summarize what happened chronologically. Focus on:
+- What the user was trying to accomplish
+- Key decisions made and why
+- Where the AI was corrected or redirected
+- What worked and what didn't (with specifics)
+- Final outcome or current state
+
+Format: Bulleted timeline. Include concrete details (numbers, file names, error messages).
+Do NOT include generic workflow steps (git commit, cargo build, file read/write).
+
+Conversation:
+{context}

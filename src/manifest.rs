@@ -4,7 +4,7 @@
 use crate::error::SkillMinerError;
 use crate::types::{DraftEntry, DraftStatus, Manifest};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Compute SHA256 hash of content, returned as hex string.
@@ -78,25 +78,26 @@ fn validate_transition(
     }
 }
 
-/// Find the cluster that contributed to a draft.
-/// First tries domain slug match (legacy), then checks if any pattern's skill_slug matches.
-fn find_cluster_for_draft<'a>(
-    draft: &crate::types::SkillDraft,
-    clusters: &'a [crate::types::DomainCluster],
-) -> Option<&'a crate::types::DomainCluster> {
-    // Legacy: domain slug matches draft name directly
-    if let Some(c) = clusters
-        .iter()
-        .find(|c| crate::domains::normalize(&c.domain).slug == draft.name)
-    {
-        return Some(c);
+/// Build lookup maps from clusters for O(1) draft-to-cluster resolution.
+/// Returns (domain_slug_map, skill_slug_map).
+fn build_cluster_index(
+    clusters: &[crate::types::DomainCluster],
+) -> (
+    HashMap<String, usize>,
+    HashMap<String, usize>,
+) {
+    let mut domain_map = HashMap::new();
+    let mut skill_map = HashMap::new();
+    for (i, c) in clusters.iter().enumerate() {
+        let slug = crate::domains::normalize(&c.domain).slug.clone();
+        domain_map.entry(slug).or_insert(i);
+        for p in &c.patterns {
+            if let Some(ref s) = p.skill_slug {
+                skill_map.entry(s.clone()).or_insert(i);
+            }
+        }
     }
-    // Topic-level: find cluster containing a pattern whose skill_slug matches
-    clusters.iter().find(|c| {
-        c.patterns
-            .iter()
-            .any(|p| p.skill_slug.as_deref() == Some(&draft.name))
-    })
+    (domain_map, skill_map)
 }
 
 /// Create a manifest from generated skill drafts and domain clusters.
@@ -107,9 +108,14 @@ pub fn create_from_drafts(
 ) -> Manifest {
     use chrono::Utc;
 
+    let (domain_map, skill_map) = build_cluster_index(clusters);
+
     let mut entries = Vec::new();
     for draft in drafts {
-        let cluster = find_cluster_for_draft(draft, clusters);
+        let cluster = domain_map
+            .get(&draft.name)
+            .or_else(|| skill_map.get(&draft.name))
+            .map(|&i| &clusters[i]);
 
         // Count patterns that belong to this draft's slug
         let pattern_count = cluster
@@ -159,6 +165,30 @@ pub fn create_from_drafts(
         mined_ids: HashSet::new(),
         pending_extracts: Vec::new(),
     }
+}
+
+/// Merge new drafts into an existing manifest, preserving existing entries.
+/// Updates counts/hash for existing slugs; appends new ones.
+pub fn merge_drafts(
+    manifest: &mut Manifest,
+    drafts: &[crate::types::SkillDraft],
+    clusters: &[crate::types::DomainCluster],
+) {
+    let new_mf = create_from_drafts(drafts, clusters, Path::new(""));
+
+    for new_entry in new_mf.entries {
+        if let Some(existing) = manifest.entries.iter_mut().find(|e| e.slug == new_entry.slug) {
+            // Update counts/hash, preserve status/deployed_at/score/fire_count
+            existing.pattern_count = new_entry.pattern_count;
+            existing.conversation_count = new_entry.conversation_count;
+            existing.content_hash = new_entry.content_hash;
+            existing.generated_at = new_entry.generated_at;
+        } else {
+            manifest.entries.push(new_entry);
+        }
+    }
+
+    manifest.generated_at = chrono::Utc::now();
 }
 
 /// Scan .md files in a directory and create a manifest (fallback for legacy dirs without manifest.toml).
@@ -237,10 +267,18 @@ fn extract_domain_from_frontmatter(content: &str) -> Option<String> {
         }
         if let Some(rest) = line.strip_prefix("description:") {
             let desc = rest.trim().trim_matches('"');
-            // Domain is typically the first word before the period
-            if let Some(dot_pos) = desc.find('。') {
-                return Some(desc[..dot_pos].to_string());
+            if desc.is_empty() {
+                return None;
             }
+            // Domain is typically the first sentence before a period (Japanese or English)
+            if let Some(pos) = desc.find('。') {
+                return Some(desc[..pos].to_string());
+            }
+            if let Some(pos) = desc.find('.') {
+                return Some(desc[..pos].to_string());
+            }
+            // No period found: use full description as domain hint
+            return Some(desc.to_string());
         }
     }
     None

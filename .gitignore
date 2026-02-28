@@ -4,3 +4,4 @@
 *.skillpack
 my-skills.skillpack/
 tmp_sync_from_claude.ps1
+/.tmp/

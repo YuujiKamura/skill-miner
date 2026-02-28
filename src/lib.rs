@@ -14,6 +14,7 @@ pub mod parser;
 pub mod refiner;
 pub mod scorer;
 pub mod sync;
+pub mod today;
 pub mod tool_coverage;
 pub mod types;
 
