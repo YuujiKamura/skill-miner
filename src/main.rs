@@ -94,9 +94,9 @@ enum Command {
         /// Output directory for generated skills
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Dry run: show what would be generated without writing files
+        /// Actually deploy generated skills (default: dry-run only)
         #[arg(long)]
-        dry_run: bool,
+        deploy: bool,
         /// Maximum parallel AI calls
         #[arg(long, default_value = "4")]
         parallel: usize,
@@ -330,7 +330,7 @@ fn main() -> Result<()> {
         Command::Generate { input, output } => cmd_generate(&config, input, output),
         Command::Mine {
             output,
-            dry_run,
+            deploy,
             parallel,
             max_windows,
             max_days,
@@ -343,7 +343,7 @@ fn main() -> Result<()> {
             summarize_model,
         } => {
             let sum_opts = build_summarize_options(no_summarize, &summarize_backend, &summarize_model);
-            cmd_mine(&config, output, dry_run, parallel, max_windows, max_days, min_messages, min_significance, dir, sync, sum_opts)
+            cmd_mine(&config, output, !deploy, parallel, max_windows, max_days, min_messages, min_significance, dir, sync, sum_opts)
         }
         Command::List { dir } => cmd_list(&config, dir),
         Command::Diff { name, dir } => cmd_diff(&config, name, dir),

@@ -237,15 +237,34 @@ pub fn is_noise_target(s: &str) -> bool {
 }
 
 pub fn extract_display_quotes(items: &[&history::HistoryEntry]) -> Vec<String> {
-    let mut quotes = Vec::new();
-    for item in items.iter().take(6) {
-        let s = item.display.replace('\n', " ").replace('\r', " ").trim().to_string();
-        if s.is_empty() {
+    let mut candidates: Vec<String> = Vec::new();
+    for item in items {
+        let s = item.display.replace('\n', " ").replace('\r', " ");
+        let s = s.trim().to_string();
+        if s.is_empty() || s.len() < 15 {
             continue;
         }
-        if !quotes.iter().any(|q| q == &s) {
-            quotes.push(s);
+        // Skip slash commands
+        if s.starts_with('/') {
+            continue;
+        }
+        // Skip generic short directives
+        if is_generic_directive(&s) {
+            continue;
+        }
+        if !candidates.iter().any(|q| q == &s) {
+            candidates.push(s);
         }
     }
-    quotes
+    // Prefer longer, more substantive quotes
+    candidates.sort_by(|a, b| b.len().cmp(&a.len()));
+    candidates.into_iter().take(2).collect()
+}
+
+fn is_generic_directive(s: &str) -> bool {
+    let generic = [
+        "チーム作ってやれ", "つづきどうぞ", "どうぞ", "続けて", "やれ", "頼む",
+        "プランモード", "続き", "はい", "OK", "ok", "おk",
+    ];
+    generic.iter().any(|g| s.trim() == *g)
 }
