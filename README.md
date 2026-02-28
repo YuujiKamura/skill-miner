@@ -265,10 +265,30 @@ skill-miner graph [-d <DIR>]
 
 Analyzes markdown links, skill references, and project paths between skills, memory files, and CLAUDE.md.
 
-#### `today` -- Show today's work timeline
+#### `today` -- Show work timeline with AI-powered summarization
 
 ```sh
-skill-miner today [--project <FILTER>] [--search <TEXT>]
+skill-miner today [OPTIONS]
+```
+
+Shows a timeline of your Claude Code sessions, grouped by time slots. In `summary` mode, parses actual conversation JSONL files to extract full context (working directory, first user message, AI response, files touched) and uses AI to infer the target project and summarize what was done.
+
+| Option | Default | Description |
+|---|---|---|
+| `--days` | 1 | How many days back to include |
+| `--project` | - | Filter by project path (substring) |
+| `--search` | - | Search display text (substring, case-insensitive) |
+| `--format` | `raw` | Output format: `raw` (timeline) or `summary` (AI-summarized) |
+| `--granularity` | `medium` | Time slot size: `coarse` (3h), `medium` (1h), `fine` (30m) |
+
+Example:
+
+```sh
+# AI-summarized timeline of today's work
+skill-miner today --format summary
+
+# Last 7 days, 1-hour slots
+skill-miner today --days 7 --format summary --granularity medium
 ```
 
 ## Configuration
@@ -301,6 +321,28 @@ Each domain needs:
 - `keywords`: Hints for fuzzy matching when AI output doesn't exactly match
 
 The last entry with `slug = "misc"` acts as the catch-all for unclassifiable conversations.
+
+### Module Structure
+
+```
+src/
+  main.rs         CLI entry point (clap dispatch only)
+  lib.rs          Crate root, re-exports
+  parser.rs       Parse conversation JSONL files
+  compressor.rs   Compress conversations into summaries
+  classifier.rs   AI-powered domain classification
+  extractor.rs    AI-powered pattern extraction
+  generator.rs    Generate skill .md files from patterns
+  deployer.rs     Deploy skills to ~/.claude/skills/
+  miner.rs        Progressive mining orchestrator
+  scorer.rs       Skill scoring (fire rate, productivity, dormancy)
+  refiner.rs      AI-powered description refinement
+  manifest.rs     Draft manifest management
+  today.rs        Work timeline with AI summarization
+  types.rs        Shared data types
+  util.rs         Utilities (JSON parsing, truncation)
+  ...
+```
 
 ### Directory Layout
 
